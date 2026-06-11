@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends  
 from services.logger_services import logger
-from core.config import settings
 from utils.auth_utils import verify_secret_key  # Import your function here
+
 
 router = APIRouter(
     tags=["Health Check"]

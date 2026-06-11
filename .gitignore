@@ -7,3 +7,5 @@ venv/
 *.log
 logs/
 
+
+scraped_result.json
