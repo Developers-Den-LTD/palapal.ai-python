@@ -1,20 +1,28 @@
+import json
 import re
+from pathlib import Path
 
 from openai import OpenAI
 
 from core.config import settings
 from schema.AI_visibility_schema import AIVisibilityRequest
 from services.logger_services import logger
+from services.model_loader import load_sentiment_model
 
 TOTAL_QUESTIONS = 10
 MAX_CITATION_SCORE = 15
-MAX_EXPOSURE_SCORE = 13
+MAX_EXPOSURE_SCORE = 10
+MAX_SENTIMENT_SCORE = 15
+MAX_DDI_AI_VISIBILITY_SCORE = MAX_CITATION_SCORE + MAX_EXPOSURE_SCORE + MAX_SENTIMENT_SCORE
 
 POSITION_POINTS = {
-    "first": 13,
-    "middle": 7,
-    "last": 3,
+    "first": 10,
+    "middle": 5,
+    "last": 2,
 }
+
+SCRAPED_RESULT_PATH = Path(__file__).resolve().parent.parent / "scraped_result.json"
+REVIEW_PLATFORMS = ("google_maps", "yelp", "tripadvisor")
 
 client = OpenAI(
     api_key=settings.Perplexity_API,
@@ -274,6 +282,209 @@ def _calculate_exposure_fairness(business_name: str, answers_text: str) -> dict:
     }
 
 
+def _normalize_sentiment_label(raw_label: str) -> str:
+    label = raw_label.lower().strip()
+
+    if "positive" in label:
+        return "positive"
+    if "negative" in label:
+        return "negative"
+    if "neutral" in label:
+        return "neutral"
+
+    return "neutral"
+
+
+def _sentiment_from_rating(rating) -> str | None:
+    if not isinstance(rating, (int, float)):
+        return None
+    if rating >= 4:
+        return "positive"
+    if rating == 3:
+        return "neutral"
+    if rating <= 2:
+        return "negative"
+    return None
+
+
+def _calculate_sentiment_score(sentiment_data: dict) -> tuple[int, dict]:
+    positive_pct = sentiment_data["positive_percentage"]
+    negative_pct = sentiment_data["negative_percentage"]
+    total_comments = sentiment_data["total_comments"]
+
+    if positive_pct >= 90:
+        base_score = 15
+    elif positive_pct >= 80:
+        base_score = 12
+    elif positive_pct >= 70:
+        base_score = 10
+    elif positive_pct >= 60:
+        base_score = 8
+    elif positive_pct >= 50:
+        base_score = 6
+    elif positive_pct >= 40:
+        base_score = 4
+    elif positive_pct >= 30:
+        base_score = 2
+    else:
+        base_score = 0
+
+    if negative_pct > 30:
+        penalty = 6
+    elif negative_pct > 20:
+        penalty = 4
+    elif negative_pct > 10:
+        penalty = 2
+    else:
+        penalty = 0
+
+    if total_comments >= 60:
+        confidence = 1.0
+    elif total_comments >= 30:
+        confidence = 0.9
+    elif total_comments >= 15:
+        confidence = 0.7
+    else:
+        confidence = 0.5
+
+    final_score = (base_score - penalty) * confidence
+    final_score = round(final_score)
+    final_score = max(0, min(MAX_SENTIMENT_SCORE, final_score))
+
+    breakdown = {
+        "base_score": base_score,
+        "penalty": penalty,
+        "confidence": confidence,
+        "final_score": final_score,
+        "positive_pct": positive_pct,
+        "negative_pct": negative_pct,
+        "total_comments": total_comments,
+    }
+
+    return final_score, breakdown
+
+
+def _calculate_sentiment_analysis() -> dict:
+    _log_section("Step 5 — Sentiment analysis (scraped reviews)")
+
+    model = load_sentiment_model()
+
+    if not SCRAPED_RESULT_PATH.exists():
+        logger.warning(
+            f"ai_visibility: scraped_result.json not found at {SCRAPED_RESULT_PATH}"
+        )
+        return {
+            "positive": 0,
+            "negative": 0,
+            "neutral": 0,
+            "total_comments": 0,
+            "positive_percentage": 0.0,
+            "negative_percentage": 0.0,
+            "neutral_percentage": 0.0,
+            "score": 0,
+            "max_score": MAX_SENTIMENT_SCORE,
+            "score_breakdown": {
+                "base_score": 0,
+                "penalty": 0,
+                "confidence": 0.0,
+                "final_score": 0,
+                "positive_pct": 0.0,
+                "negative_pct": 0.0,
+                "total_comments": 0,
+            },
+            "message": "No scraped_result.json found. Run scrape API first.",
+        }
+
+    with open(SCRAPED_RESULT_PATH, "r", encoding="utf-8") as file:
+        scraped_data = json.load(file)
+
+    positive = 0
+    negative = 0
+    neutral = 0
+    total_comments = 0
+
+    for platform in REVIEW_PLATFORMS:
+        reviews = scraped_data.get(platform, {}).get("reviews", [])
+
+        for review in reviews:
+            total_comments += 1
+            comment = review.get("comment")
+            display_text = ""
+
+            if comment and str(comment).strip():
+                display_text = str(comment).strip()
+                prediction = model(display_text[:512])[0]
+                sentiment = _normalize_sentiment_label(prediction["label"])
+            else:
+                rating_sentiment = _sentiment_from_rating(review.get("rating"))
+                if rating_sentiment is None:
+                    sentiment = "neutral"
+                    display_text = "[No comment text — counted as neutral]"
+                else:
+                    sentiment = rating_sentiment
+                    display_text = f"[No comment — inferred from {review.get('rating')} star rating]"
+
+            if sentiment == "positive":
+                positive += 1
+            elif sentiment == "negative":
+                negative += 1
+            else:
+                neutral += 1
+
+            logger.info(
+                f"ai_visibility: [{platform}] {sentiment.upper()} — "
+                f"{display_text[:100]}{'...' if len(display_text) > 100 else ''}"
+            )
+            print(f"[{platform}] {sentiment.upper()}: {display_text[:120]}")
+
+    logger.info("ai_visibility: sentiment results:")
+    logger.info(f"ai_visibility:   positive : {positive}")
+    logger.info(f"ai_visibility:   negative : {negative}")
+    logger.info(f"ai_visibility:   neutral  : {neutral}")
+    logger.info(f"ai_visibility:   total    : {total_comments}")
+
+    print("\nSentiment Results:")
+    print(f"  Positive : {positive}")
+    print(f"  Negative : {negative}")
+    print(f"  Neutral  : {neutral}")
+    print(f"  Total    : {total_comments}\n")
+
+    sentiment_data = {
+        "positive": positive,
+        "negative": negative,
+        "neutral": neutral,
+        "total_comments": total_comments,
+        "positive_percentage": round((positive / total_comments) * 100, 1) if total_comments else 0.0,
+        "negative_percentage": round((negative / total_comments) * 100, 1) if total_comments else 0.0,
+        "neutral_percentage": round((neutral / total_comments) * 100, 1) if total_comments else 0.0,
+    }
+
+    final_score, score_breakdown = _calculate_sentiment_score(sentiment_data)
+
+    logger.info("ai_visibility: sentiment score breakdown:")
+    logger.info(f"ai_visibility:   base_score : {score_breakdown['base_score']} / {MAX_SENTIMENT_SCORE}")
+    logger.info(f"ai_visibility:   penalty    : -{score_breakdown['penalty']}")
+    logger.info(f"ai_visibility:   confidence : {score_breakdown['confidence']}")
+    logger.info(f"ai_visibility:   final_score: {score_breakdown['final_score']} / {MAX_SENTIMENT_SCORE}")
+
+    print("Sentiment Score:")
+    print(f"  Base Score:  {score_breakdown['base_score']} / {MAX_SENTIMENT_SCORE}")
+    print(f"  Penalty:    -{score_breakdown['penalty']}")
+    print(f"  Confidence:  {score_breakdown['confidence']}")
+    print(f"  Final Score: {score_breakdown['final_score']} / {MAX_SENTIMENT_SCORE}\n")
+
+    return {
+        **sentiment_data,
+        "score": final_score,
+        "max_score": MAX_SENTIMENT_SCORE,
+        "score_breakdown": score_breakdown,
+    }
+
+
+
+
+
+
 def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
     business_name = payload.business_name.strip()
     business_type = payload.business_type.strip()
@@ -288,8 +499,34 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
     questions_text = _generate_questions(business_type, business_loc, business_name)
     answers_text = _fetch_answers(business_type, business_loc, questions_text)
 
+    # ---------------- Calculate Citation ---------------- #
     citation_score = _calculate_citation_score(business_name, answers_text)
+    
+    
+    # ---------------- Calculate Exposure Fairness ---------------- #
     exposure_fairness = _calculate_exposure_fairness(business_name, answers_text)
+    
+    
+    # ---------------- Calculate Sentiment Analysis ---------------- #
+    sentiment_analysis = _calculate_sentiment_analysis()
+
+
+    citation_result = citation_score["score"]
+    exposure_fairness_result = exposure_fairness["score"]
+    sentiment_analysis_result = sentiment_analysis["score"]
+    ddi_ai_visibility_result = round(
+        citation_result + exposure_fairness_result + sentiment_analysis_result,
+        2,
+    )
+
+    _log_section("DDI AI Visibility — Final Score Summary")
+    logger.info(f"ai_visibility: citation result = {citation_result}")
+    logger.info(f"ai_visibility: exposure fairness result = {exposure_fairness_result}")
+    logger.info(f"ai_visibility: sentiment analysis result = {sentiment_analysis_result}")
+    logger.info(f'ai_visibility: "DDI_AI_visibility_result": {ddi_ai_visibility_result},')
+    logger.info(
+        f'ai_visibility: "max_DDI_AI_visibility_score": {MAX_DDI_AI_VISIBILITY_SCORE}'
+    )
 
     result = {
         "status": "success",
@@ -300,6 +537,9 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
         "answers": answers_text,
         "citation_score": citation_score,
         "exposure_fairness": exposure_fairness,
+        "sentiment_analysis": sentiment_analysis,
+        "DDI_AI_visibility_result": ddi_ai_visibility_result,
+        "max_DDI_AI_visibility_score": MAX_DDI_AI_VISIBILITY_SCORE,
     }
 
     _log_section("AI Visibility analysis completed")
@@ -318,5 +558,22 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
         f"position={exposure_fairness['average_position'].upper()}, "
         f"score={exposure_fairness['score']}/{MAX_EXPOSURE_SCORE}"
     )
+    logger.info(
+        f"ai_visibility: sentiment — "
+        f"positive={sentiment_analysis['positive']}, "
+        f"negative={sentiment_analysis['negative']}, "
+        f"neutral={sentiment_analysis['neutral']}, "
+        f"score={sentiment_analysis['score']}/{MAX_SENTIMENT_SCORE}"
+    )
+    logger.info(
+        f"ai_visibility: DDI_AI_visibility_result — "
+        f"{ddi_ai_visibility_result}/{MAX_DDI_AI_VISIBILITY_SCORE}"
+    )
+
+    print("\ncitation result =", citation_result)
+    print("exposure fairness result =", exposure_fairness_result)
+    print("sentiment analysis result =", sentiment_analysis_result)
+    print(f'    "DDI_AI_visibility_result": {ddi_ai_visibility_result},')
+    print(f'    "max_DDI_AI_visibility_score": {MAX_DDI_AI_VISIBILITY_SCORE}\n')
 
     return result
