@@ -1,0 +1,399 @@
+import httpx
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
+
+from core.config import settings
+from services.logger_services import logger
+
+PAGESPEED_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+STRATEGIES = ["mobile", "desktop"]
+MAX_PAGESPEED_SCORE = 4
+MAX_JSON_LD_SCORE = 3
+JSON_LD_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+}
+
+
+def _log_section(title: str) -> None:
+    logger.info(f"technical_foundation: {'=' * 60}")
+    logger.info(f"technical_foundation: {title}")
+    logger.info(f"technical_foundation: {'=' * 60}")
+
+
+def _parse_lcp_seconds(lcp_value: str | None) -> float | None:
+    if not lcp_value:
+        return None
+    try:
+        return float(lcp_value.strip().split()[0])
+    except (ValueError, IndexError):
+        logger.warning(f"technical_foundation: could not parse LCP value '{lcp_value}'")
+        return None
+
+
+def _score_lcp(lcp_seconds: float | None) -> int:
+    if lcp_seconds is None:
+        return 0
+    if lcp_seconds < 2.5:
+        return 2
+    if lcp_seconds <= 4.0:
+        return 1
+    return 0
+
+
+def _score_performance(performance_score: float | None) -> int:
+    if performance_score is None:
+        return 0
+    if performance_score >= 90:
+        return 1
+    else:
+        return 0
+
+
+def _calculate_single_strategy_score(strategy_result: dict | None) -> dict:
+    if not strategy_result:
+        return {
+            "score": 0,
+            "lcp_seconds": None,
+            "lcp_pts": 0,
+            "performance_pts": 0,
+            "strategy_pts": 0,
+        }
+
+    lcp_seconds = _parse_lcp_seconds(strategy_result.get("largest_contentful_paint"))
+    performance_score = strategy_result.get("performance_score")
+    lcp_pts = _score_lcp(lcp_seconds)
+    performance_pts = _score_performance(performance_score)
+    strategy_pts = 1
+
+    return {
+        "score": lcp_pts + performance_pts + strategy_pts,
+        "lcp_seconds": lcp_seconds,
+        "lcp_pts": lcp_pts,
+        "performance_pts": performance_pts,
+        "strategy_pts": strategy_pts,
+        "performance_score": performance_score,
+    }
+
+
+def _average(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return round(sum(values) / len(values), 2)
+
+
+def calculate_pagespeed_score(pagespeed_data: dict) -> dict:
+    results = pagespeed_data.get("results", [])
+    mobile_result = next(
+        (item for item in results if item.get("strategy") == "mobile"),
+        None,
+    )
+    desktop_result = next(
+        (item for item in results if item.get("strategy") == "desktop"),
+        None,
+    )
+
+    mobile_score = _calculate_single_strategy_score(mobile_result)
+    desktop_score = _calculate_single_strategy_score(desktop_result)
+
+    strategy_scores = [mobile_score["score"], desktop_score["score"]]
+    avg_score = _average([float(score) for score in strategy_scores]) or 0
+
+    lcp_values = [
+        value
+        for value in (mobile_score["lcp_seconds"], desktop_score["lcp_seconds"])
+        if value is not None
+    ]
+    avg_lcp_seconds = _average(lcp_values)
+    avg_lcp_pts = _average([float(mobile_score["lcp_pts"]), float(desktop_score["lcp_pts"])]) or 0
+    avg_performance_pts = (
+        _average([float(mobile_score["performance_pts"]), float(desktop_score["performance_pts"])])
+        or 0
+    )
+    avg_strategy_pts = (
+        _average([float(mobile_score["strategy_pts"]), float(desktop_score["strategy_pts"])])
+        or 0
+    )
+
+    score_result = {
+        "score": avg_score,
+        "max_score": MAX_PAGESPEED_SCORE,
+        "lcp_seconds": avg_lcp_seconds,
+        "lcp_pts": avg_lcp_pts,
+        "performance_pts": avg_performance_pts,
+        "strategy_pts": avg_strategy_pts,
+        "mobile": mobile_score,
+        "desktop": desktop_score,
+    }
+
+    logger.info(
+        "technical_foundation: pagespeed score calculated — "
+        f"mobile={mobile_score['score']}/{MAX_PAGESPEED_SCORE}, "
+        f"desktop={desktop_score['score']}/{MAX_PAGESPEED_SCORE}, "
+        f"average={avg_score}/{MAX_PAGESPEED_SCORE}"
+    )
+    logger.info(
+        "technical_foundation: mobile breakdown — "
+        f"lcp_seconds={mobile_score['lcp_seconds']}, lcp_pts={mobile_score['lcp_pts']}, "
+        f"performance_pts={mobile_score['performance_pts']}, "
+        f"strategy_pts={mobile_score['strategy_pts']}"
+    )
+    logger.info(
+        "technical_foundation: desktop breakdown — "
+        f"lcp_seconds={desktop_score['lcp_seconds']}, lcp_pts={desktop_score['lcp_pts']}, "
+        f"performance_pts={desktop_score['performance_pts']}, "
+        f"strategy_pts={desktop_score['strategy_pts']}"
+    )
+    print(
+        f"\nPageSpeed Score (average): {avg_score}/{MAX_PAGESPEED_SCORE}\n"
+        f"  Mobile  : {mobile_score['score']}/{MAX_PAGESPEED_SCORE} "
+        f"(LCP={mobile_score['lcp_pts']}, Performance={mobile_score['performance_pts']}, "
+        f"Strategy={mobile_score['strategy_pts']})\n"
+        f"  Desktop : {desktop_score['score']}/{MAX_PAGESPEED_SCORE} "
+        f"(LCP={desktop_score['lcp_pts']}, Performance={desktop_score['performance_pts']}, "
+        f"Strategy={desktop_score['strategy_pts']})\n"
+    )
+
+    return score_result
+
+
+def _score(category: dict) -> float:
+    raw = category.get("score")
+    return round((raw or 0) * 100, 2)
+
+
+def _extract_strategy_result(website_url: str, strategy: str, data: dict) -> dict:
+    lighthouse = data.get("lighthouseResult", {})
+    categories = lighthouse.get("categories", {})
+    audits = lighthouse.get("audits", {})
+
+    return {
+        "website": website_url,
+        "strategy": strategy,
+        "performance_score": _score(categories.get("performance", {})),
+        "seo_score": _score(categories.get("seo", {})),
+        "accessibility_score": _score(categories.get("accessibility", {})),
+        "best_practices_score": _score(categories.get("best-practices", {})),
+        "first_contentful_paint": audits.get("first-contentful-paint", {}).get("displayValue"),
+        "largest_contentful_paint": audits.get("largest-contentful-paint", {}).get("displayValue"),
+        "speed_index": audits.get("speed-index", {}).get("displayValue"),
+        "total_blocking_time": audits.get("total-blocking-time", {}).get("displayValue"),
+        "cumulative_layout_shift": audits.get("cumulative-layout-shift", {}).get("displayValue"),
+    }
+
+
+def _log_strategy_result(strategy_result: dict) -> None:
+    strategy = strategy_result["strategy"]
+    logger.info(f"technical_foundation: [{strategy}] Performance Score      = {strategy_result['performance_score']}")
+    logger.info(f"technical_foundation: [{strategy}] SEO Score              = {strategy_result['seo_score']}")
+    logger.info(f"technical_foundation: [{strategy}] Accessibility Score    = {strategy_result['accessibility_score']}")
+    logger.info(f"technical_foundation: [{strategy}] Best Practices Score   = {strategy_result['best_practices_score']}")
+    logger.info(f"technical_foundation: [{strategy}] First Contentful Paint = {strategy_result['first_contentful_paint']}")
+    logger.info(f"technical_foundation: [{strategy}] Largest Contentful Paint = {strategy_result['largest_contentful_paint']}")
+    logger.info(f"technical_foundation: [{strategy}] Speed Index            = {strategy_result['speed_index']}")
+    logger.info(f"technical_foundation: [{strategy}] Total Blocking Time    = {strategy_result['total_blocking_time']}")
+    logger.info(f"technical_foundation: [{strategy}] Cumulative Layout Shift = {strategy_result['cumulative_layout_shift']}")
+
+    print(f"\n===== PAGESPEED RESULTS — {strategy.upper()} =====\n")
+    for key, value in strategy_result.items():
+        if key == "website":
+            continue
+        print(f"{key.replace('_', ' ').title()}: {value}")
+
+
+def _build_llms_txt_urls(website_url: str) -> tuple[str, str]:
+    parsed_url = urlparse(website_url)
+    if not parsed_url.scheme or not parsed_url.netloc:
+        raise ValueError(f"Invalid URL format: {website_url}")
+    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    llms_txt_url = f"{base_url}/llms.txt"
+    return base_url, llms_txt_url
+
+
+def check_llms_txt(website_url: str) -> dict:
+    _log_section("Technical Foundation — llms.txt check started")
+    logger.info(f"technical_foundation: checking llms.txt for website_url='{website_url}'")
+
+    base_url, llms_txt_url = _build_llms_txt_urls(website_url)
+
+    score = 0
+    status_code = None
+    message = ""
+
+    try:
+        response = httpx.get(llms_txt_url, timeout=10)
+        status_code = response.status_code
+
+        if response.status_code == 200:
+            content = response.text.strip()
+            if content:
+                score = 6
+                message = "llms.txt found and contains content."
+            else:
+                message = "llms.txt is empty."
+        elif response.status_code == 404:
+            message = "llms.txt not found."
+        else:
+            message = f"Unexpected HTTP status: {response.status_code}"
+
+    except httpx.TimeoutException:
+        message = "Request timed out."
+    except httpx.RequestError as e:
+        message = f"Request failed: {str(e)}"
+
+    result = {
+        "website_url": base_url,
+        "llms_txt_url": llms_txt_url,
+        "http_status": status_code,
+        "score": score,
+        "message": message,
+    }
+
+    logger.info(
+        "technical_foundation: llms.txt check completed — "
+        f"url='{llms_txt_url}', http_status={status_code}, score={score}, message='{message}'"
+    )
+    return result
+
+
+def check_json_ld(website_url: str) -> dict:
+    _log_section("Technical Foundation — JSON-LD check started")
+    logger.info(f"technical_foundation: checking JSON-LD for website_url='{website_url}'")
+
+    score = 0
+    found = False
+    status_code = None
+    message = ""
+
+    try:
+        response = httpx.get(
+            website_url,
+            headers=JSON_LD_HEADERS,
+            timeout=10,
+            follow_redirects=True,
+        )
+        status_code = response.status_code
+
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
+            json_ld_tags = soup.find_all("script", type="application/ld+json")
+
+            if json_ld_tags:
+                found = True
+                score = MAX_JSON_LD_SCORE
+                message = "JSON-LD schema found."
+            else:
+                message = "JSON-LD schema not found."
+        else:
+            message = f"HTTP error: {response.status_code}"
+
+    except httpx.TimeoutException:
+        message = "Request timed out."
+    except httpx.RequestError as e:
+        message = f"Connection error: {str(e)}"
+
+    result = {
+        "website_url": website_url,
+        "found": found,
+        "http_status": status_code,
+        "score": score,
+        "max_score": MAX_JSON_LD_SCORE,
+        "message": message,
+    }
+
+    logger.info(
+        "technical_foundation: JSON-LD check completed — "
+        f"url='{website_url}', found={found}, http_status={status_code}, "
+        f"score={score}/{MAX_JSON_LD_SCORE}, message='{message}'"
+    )
+    return result
+
+
+def check_technical_foundation(website_url: str) -> dict:
+    llms_txt_result = check_llms_txt(website_url)
+    json_ld_result = check_json_ld(website_url)
+
+    _log_section("Technical Foundation — PageSpeed analysis started")
+    logger.info(f"technical_foundation: website_url='{website_url}'")
+    logger.info(f"technical_foundation: strategies={STRATEGIES}")
+    print(f"Website URL : {website_url}")
+    print(f"Strategies  : {', '.join(STRATEGIES)}\n")
+
+    results = []
+
+    with httpx.Client(timeout=120.0) as client:
+        for index, strategy in enumerate(STRATEGIES, start=1):
+            _log_section(f"Step {index} — PageSpeed API call ({strategy})")
+            params = {
+                "url": website_url,
+                "strategy": strategy,
+                "key": settings.Pagespeed_API,
+            }
+
+            logger.info(
+                f"technical_foundation: calling PageSpeed API — "
+                f"endpoint={PAGESPEED_ENDPOINT}, strategy={strategy}"
+            )
+            print(f"Calling PageSpeed API for: {strategy}")
+
+            response = client.get(PAGESPEED_ENDPOINT, params=params)
+
+            logger.info(
+                f"technical_foundation: API response — "
+                f"strategy={strategy}, status_code={response.status_code}"
+            )
+            print(f"Status Code: {response.status_code}")
+
+            if response.status_code != 200:
+                logger.error(
+                    f"technical_foundation: API error — strategy={strategy}, "
+                    f"status={response.status_code}, body={response.text}"
+                )
+                print(f"\nError:\n{response.text}\n")
+                return {
+                    "status": "error",
+                    "message": f"PageSpeed API failed for {strategy}",
+                    "website": website_url,
+                    "details": response.text,
+                    "llms_txt": llms_txt_result,
+                    "json_ld": json_ld_result,
+                }
+
+            strategy_result = _extract_strategy_result(
+                website_url, strategy, response.json()
+            )
+            results.append(strategy_result)
+            _log_strategy_result(strategy_result)
+
+    _log_section("Technical Foundation — Final Summary")
+    for strategy_result in results:
+        logger.info(
+            f"technical_foundation: summary [{strategy_result['strategy']}] — "
+            f"performance={strategy_result['performance_score']}, "
+            f"seo={strategy_result['seo_score']}, "
+            f"accessibility={strategy_result['accessibility_score']}, "
+            f"best_practices={strategy_result['best_practices_score']}"
+        )
+
+    _log_section("Technical Foundation — PageSpeed Score")
+    pagespeed_score = calculate_pagespeed_score({"results": results})
+    logger.info(
+        f"technical_foundation: DDI PageSpeed score = "
+        f"{pagespeed_score['score']}/{pagespeed_score['max_score']}"
+    )
+
+    logger.info(
+        f"technical_foundation: analysis completed successfully for url='{website_url}'"
+    )
+    print(f"\nTechnical foundation analysis completed for: {website_url}\n")
+
+    return {
+        "status": "success",
+        "website": website_url,
+        "results": results,
+        "pagespeed_score": pagespeed_score,
+        "llms_txt": llms_txt_result,
+        "json_ld": json_ld_result,
+    }

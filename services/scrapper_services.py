@@ -315,14 +315,40 @@ def _scrape_yelp(payload: ScrapeRequest, full_search_query: str):
 def _scrape_tripadvisor(tripadvisor_url: str | None):
     tripadvisor_reviews = []
     tripadvisor_status = "❌ Failed"
+    business_name = "N/A"
+    business_address = "N/A"
+    business_phone = "N/A"
 
     if not tripadvisor_url:
         tripadvisor_status = "⏭️ Skipped — no TripAdvisor URL provided"
         logger.info("scrape_reviews: TripAdvisor skipped — no tripadvisor_url provided")
-        return {"status": tripadvisor_status, "reviews": tripadvisor_reviews}
+        return {
+            "status": tripadvisor_status,
+            "business_name": business_name,
+            "business_address": business_address,
+            "business_phone": business_phone,
+            "reviews": tripadvisor_reviews,
+        }
 
     try:
-        logger.info(f"scrape_reviews: starting TripAdvisor scrape url='{tripadvisor_url}'")
+        logger.info(
+            f"scrape_reviews: starting TripAdvisor detail scrape (maxcopell/tripadvisor) "
+            f"url='{tripadvisor_url}'"
+        )
+        detail_run = client.actor("maxcopell/tripadvisor").call(run_input={
+            "startUrls": [{"url": tripadvisor_url}],
+        })
+        detail_items = client.dataset(get_dataset_id(detail_run)).list_items().items
+        if detail_items:
+            biz_info = detail_items[0]
+            business_name = biz_info.get("name") or biz_info.get("title") or business_name
+            business_address = biz_info.get("address") or business_address
+            business_phone = biz_info.get("phone") or business_phone
+
+        logger.info(
+            f"scrape_reviews: starting TripAdvisor reviews scrape (maxcopell/tripadvisor-reviews) "
+            f"url='{tripadvisor_url}'"
+        )
         ta_run = client.actor("maxcopell/tripadvisor-reviews").call(run_input={
             "startUrls": [{"url": tripadvisor_url}],
             "maxReviews": 20,
@@ -349,13 +375,19 @@ def _scrape_tripadvisor(tripadvisor_url: str | None):
                 "comment": item.get("text", "[No text]"),
                 "owner_reply": item.get("ownerResponse") or None,
             })
-        tripadvisor_status = f"✅ Success — {len(tripadvisor_reviews)} reviews"
+        tripadvisor_status = f"✅ Success — {len(tripadvisor_reviews)} reviews fetched"
         logger.info(f"scrape_reviews: TripAdvisor {tripadvisor_status}")
     except Exception as e:
         tripadvisor_status = f"❌ Failed: {str(e)}"
         logger.exception(f"scrape_reviews: TripAdvisor scrape failed — {e}")
 
-    return {"status": tripadvisor_status, "reviews": tripadvisor_reviews}
+    return {
+        "status": tripadvisor_status,
+        "business_name": business_name,
+        "business_address": business_address,
+        "business_phone": business_phone,
+        "reviews": tripadvisor_reviews,
+    }
 
 
 def scrape_reviews(payload: ScrapeRequest) -> dict:
@@ -395,6 +427,9 @@ def scrape_reviews(payload: ScrapeRequest) -> dict:
             "reviews": yelp["reviews"],
         },
         "tripadvisor": {
+            "business_name": tripadvisor["business_name"],
+            "business_address": tripadvisor["business_address"],
+            "business_phone": tripadvisor["business_phone"],
             "total_reviews": len(tripadvisor["reviews"]),
             "reviews": tripadvisor["reviews"],
         },
