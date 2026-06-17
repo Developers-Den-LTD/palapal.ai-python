@@ -29,6 +29,7 @@ def technical_foundation(payload: TechnicalFoundationRequest):
             pagespeed_score = result.get("pagespeed_score", {})
             llms_txt = result.get("llms_txt", {})
             json_ld = result.get("json_ld", {})
+            nap_consistency = result.get("nap_consistency", {})
             logger.info(
                 "technical_foundation route: request completed successfully — "
                 f"website='{result.get('website')}', "
@@ -41,7 +42,12 @@ def technical_foundation(payload: TechnicalFoundationRequest):
                 f"llms_txt_message='{llms_txt.get('message')}', "
                 f"json_ld_score={json_ld.get('score')}, "
                 f"json_ld_found={json_ld.get('found')}, "
-                f"json_ld_message='{json_ld.get('message')}'"
+                f"json_ld_message='{json_ld.get('message')}', "
+                f"nap_consistency_score={nap_consistency.get('score')}, "
+                f"nap_consistent={nap_consistency.get('consistent')}, "
+                f"nap_consistency_message='{nap_consistency.get('message')}', "
+                f"DDI_technical_foundation_Result={result.get('DDI_technical_foundation_Result')}, "
+                f"max_technical_foundation_Score={result.get('max_technical_foundation_Score')}"
             )
             for strategy_result in result.get("results", []):
                 logger.info(

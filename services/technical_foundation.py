@@ -1,4 +1,7 @@
 import httpx
+import json
+import re
+from pathlib import Path
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
@@ -8,7 +11,17 @@ from services.logger_services import logger
 PAGESPEED_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 STRATEGIES = ["mobile", "desktop"]
 MAX_PAGESPEED_SCORE = 4
-MAX_JSON_LD_SCORE = 3
+MAX_LLMS_TXT_SCORE = 5
+MAX_JSON_LD_SCORE = 5
+MAX_NAP_CONSISTENCY_SCORE = 6
+MAX_DDI_TECHNICAL_FOUNDATION_SCORE = (
+    MAX_PAGESPEED_SCORE
+    + MAX_LLMS_TXT_SCORE
+    + MAX_JSON_LD_SCORE
+    + MAX_NAP_CONSISTENCY_SCORE
+)
+SCRAPED_RESULT_PATH = Path(__file__).resolve().parent.parent / "scraped_result.json"
+NAP_PLATFORMS = ("google_maps", "yelp", "tripadvisor")
 JSON_LD_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -229,7 +242,7 @@ def check_llms_txt(website_url: str) -> dict:
         if response.status_code == 200:
             content = response.text.strip()
             if content:
-                score = 6
+                score = 5
                 message = "llms.txt found and contains content."
             else:
                 message = "llms.txt is empty."
@@ -248,12 +261,14 @@ def check_llms_txt(website_url: str) -> dict:
         "llms_txt_url": llms_txt_url,
         "http_status": status_code,
         "score": score,
+        "max_score": MAX_LLMS_TXT_SCORE,
         "message": message,
     }
 
     logger.info(
         "technical_foundation: llms.txt check completed — "
-        f"url='{llms_txt_url}', http_status={status_code}, score={score}, message='{message}'"
+        f"url='{llms_txt_url}', http_status={status_code}, "
+        f"score={score}/{MAX_LLMS_TXT_SCORE}, message='{message}'"
     )
     return result
 
@@ -282,7 +297,7 @@ def check_json_ld(website_url: str) -> dict:
 
             if json_ld_tags:
                 found = True
-                score = MAX_JSON_LD_SCORE
+                score = 5
                 message = "JSON-LD schema found."
             else:
                 message = "JSON-LD schema not found."
@@ -311,9 +326,236 @@ def check_json_ld(website_url: str) -> dict:
     return result
 
 
+def _normalize_business_name(name: str) -> str:
+    if not name or str(name).strip().upper() == "N/A":
+        return ""
+    cleaned = re.sub(r"[^\w\s]", "", str(name).lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _normalize_phone(phone: str) -> str:
+    if not phone or str(phone).strip().upper() == "N/A":
+        return ""
+    digits = re.sub(r"\D", "", str(phone))
+    if digits.startswith("44") and len(digits) > 10:
+        digits = digits[2:]
+    if digits.startswith("0"):
+        digits = digits[1:]
+    return digits
+
+
+def _normalize_address(address: str) -> str:
+    if not address or str(address).strip().upper() == "N/A":
+        return ""
+    text = str(address).lower()
+    text = re.sub(r"\broad\b", "rd", text)
+    text = re.sub(r"\bstreet\b", "st", text)
+    text = re.sub(r"\b(united kingdom|england|great britain|uk|gb)\b", " ", text)
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(
+        r"([a-z]{1,2}\d[a-z\d]?)\s+(\d[a-z]{2})",
+        r"\1\2",
+        text,
+    )
+    return text
+
+
+def _parse_address_parts(address: str) -> tuple[str, str, tuple[str, ...]]:
+    if not address or str(address).strip().upper() == "N/A":
+        return "", "", ()
+
+    text = str(address).lower()
+    text = re.sub(r"\broad\b", "rd", text)
+    text = re.sub(r"\bstreet\b", "st", text)
+    text = re.sub(r"\b(united kingdom|england|great britain|uk|gb)\b", " ", text)
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    postcode_match = re.search(r"([a-z]{1,2}\d[a-z\d]?)\s*(\d[a-z]{2})", text)
+    postcode = postcode_match.group(1) + postcode_match.group(2) if postcode_match else ""
+    if postcode:
+        text = re.sub(r"([a-z]{1,2}\d[a-z\d]?)\s*(\d[a-z]{2})", " ", text)
+
+    for city in (
+        "london", "manchester", "birmingham", "edinburgh", "glasgow",
+        "liverpool", "bristol", "leeds", "sheffield", "cardiff", "belfast",
+    ):
+        text = re.sub(rf"\b{city}\b", " ", text)
+
+    tokens = [token for token in text.split() if token]
+    if not tokens:
+        return "", postcode, ()
+
+    street_number = tokens[0] if tokens[0].isdigit() else ""
+    street_tokens = tuple(tokens[1:] if street_number else tokens)
+    return street_number, postcode, street_tokens
+
+
+def _addresses_match(addresses: list[str]) -> bool:
+    parsed = [_parse_address_parts(address) for address in addresses]
+    if any(not number or not postcode or not tokens for number, postcode, tokens in parsed):
+        return False
+
+    numbers = [parts[0] for parts in parsed]
+    postcodes = [parts[1] for parts in parsed]
+    if not _values_match(numbers) or not _values_match(postcodes):
+        return False
+
+    token_sets = [set(parts[2]) for parts in parsed]
+    base_tokens = min(token_sets, key=len)
+    return all(base_tokens.issubset(token_set) for token_set in token_sets)
+
+
+def _extract_platform_nap(scraped_data: dict, platform_key: str) -> dict:
+    platform_data = scraped_data.get(platform_key, {})
+    return {
+        "name": platform_data.get("business_name", "N/A"),
+        "address": platform_data.get("business_address", "N/A"),
+        "phone": platform_data.get("business_phone", "N/A"),
+    }
+
+
+def _values_match(values: list[str]) -> bool:
+    if not values or any(not value for value in values):
+        return False
+    return len(set(values)) == 1
+
+
+def check_nap_consistency() -> dict:
+    _log_section("Technical Foundation — NAP consistency check started")
+
+    if not SCRAPED_RESULT_PATH.exists():
+        message = f"Scraped result file not found: {SCRAPED_RESULT_PATH}"
+        logger.warning(f"technical_foundation: {message}")
+        result = {
+            "score": 0,
+            "max_score": MAX_NAP_CONSISTENCY_SCORE,
+            "consistent": False,
+            "message": message,
+            "platforms": {},
+            "normalized": {},
+            "matches": {
+                "name": False,
+                "address": False,
+                "phone": False,
+            },
+        }
+        print(
+            f"\nNAP Consistency Score: 0/{MAX_NAP_CONSISTENCY_SCORE}\n  {message}\n"
+        )
+        return result
+
+    with open(SCRAPED_RESULT_PATH, encoding="utf-8") as f:
+        scraped_data = json.load(f)
+
+    platform_nap = {
+        platform: _extract_platform_nap(scraped_data, platform)
+        for platform in NAP_PLATFORMS
+    }
+    normalized = {
+        platform: {
+            "name": _normalize_business_name(nap["name"]),
+            "address": _normalize_address(nap["address"]),
+            "phone": _normalize_phone(nap["phone"]),
+        }
+        for platform, nap in platform_nap.items()
+    }
+
+    name_match = _values_match([data["name"] for data in normalized.values()])
+    address_match = _addresses_match([nap["address"] for nap in platform_nap.values()])
+    phone_match = _values_match([data["phone"] for data in normalized.values()])
+    consistent = name_match and address_match and phone_match
+    score = MAX_NAP_CONSISTENCY_SCORE if consistent else 0
+
+    if consistent:
+        message = "NAP data is consistent across Google Maps, Yelp, and TripAdvisor."
+    else:
+        mismatches = []
+        if not name_match:
+            mismatches.append("name")
+        if not address_match:
+            mismatches.append("address")
+        if not phone_match:
+            mismatches.append("phone")
+        message = f"NAP mismatch detected: {', '.join(mismatches)}."
+
+    result = {
+        "score": score,
+        "max_score": MAX_NAP_CONSISTENCY_SCORE,
+        "consistent": consistent,
+        "message": message,
+        "platforms": platform_nap,
+        "normalized": normalized,
+        "matches": {
+            "name": name_match,
+            "address": address_match,
+            "phone": phone_match,
+        },
+    }
+
+    logger.info(
+        "technical_foundation: NAP consistency check completed — "
+        f"score={score}/{MAX_NAP_CONSISTENCY_SCORE}, consistent={consistent}, "
+        f"name_match={name_match}, address_match={address_match}, phone_match={phone_match}"
+    )
+
+    print(f"\nNAP Consistency Score: {score}/{MAX_NAP_CONSISTENCY_SCORE}\n")
+    print(f"  Consistent : {consistent}")
+    print(f"  Message    : {message}\n")
+    for platform in NAP_PLATFORMS:
+        raw = platform_nap[platform]
+        norm = normalized[platform]
+        print(f"  [{platform}]")
+        print(f"    Name (raw)       : {raw['name']}")
+        print(f"    Name (normalized): {norm['name'] or 'N/A'}")
+        print(f"    Address (raw)       : {raw['address']}")
+        print(f"    Address (normalized): {norm['address'] or 'N/A'}")
+        print(f"    Phone (raw)       : {raw['phone']}")
+        print(f"    Phone (normalized): {norm['phone'] or 'N/A'}")
+    print(
+        f"\n  Matches — name: {name_match}, address: {address_match}, phone: {phone_match}\n"
+    )
+
+    return result
+
+
+def calculate_ddi_technical_foundation_score(
+    pagespeed_score: dict | None,
+    llms_txt_result: dict,
+    json_ld_result: dict,
+    nap_consistency_result: dict,
+) -> float:
+    pagespeed_points = float((pagespeed_score or {}).get("score") or 0)
+    llms_points = float(llms_txt_result.get("score") or 0)
+    json_ld_points = float(json_ld_result.get("score") or 0)
+    nap_points = float(nap_consistency_result.get("score") or 0)
+
+    total = round(pagespeed_points + llms_points + json_ld_points + nap_points, 2)
+
+    logger.info(
+        "technical_foundation: DDI score calculated — "
+        f"pagespeed={pagespeed_points}/{MAX_PAGESPEED_SCORE}, "
+        f"llms_txt={llms_points}/{MAX_LLMS_TXT_SCORE}, "
+        f"json_ld={json_ld_points}/{MAX_JSON_LD_SCORE}, "
+        f"nap={nap_points}/{MAX_NAP_CONSISTENCY_SCORE}, "
+        f"total={total}/{MAX_DDI_TECHNICAL_FOUNDATION_SCORE}"
+    )
+
+    print("pagespeed result          =", pagespeed_points)
+    print("llms_txt result           =", llms_points)
+    print("json_ld result            =", json_ld_points)
+    print("nap_consistency result    =", nap_points)
+    print(f'    "DDI_technical_foundation_Result": {total},')
+    print(f'    "max_technical_foundation_Score": {MAX_DDI_TECHNICAL_FOUNDATION_SCORE}\n')
+
+    return total
+
+
 def check_technical_foundation(website_url: str) -> dict:
     llms_txt_result = check_llms_txt(website_url)
     json_ld_result = check_json_ld(website_url)
+    nap_consistency_result = check_nap_consistency()
 
     _log_section("Technical Foundation — PageSpeed analysis started")
     logger.info(f"technical_foundation: website_url='{website_url}'")
@@ -352,6 +594,12 @@ def check_technical_foundation(website_url: str) -> dict:
                     f"status={response.status_code}, body={response.text}"
                 )
                 print(f"\nError:\n{response.text}\n")
+                ddi_technical_foundation_result = calculate_ddi_technical_foundation_score(
+                    None,
+                    llms_txt_result,
+                    json_ld_result,
+                    nap_consistency_result,
+                )
                 return {
                     "status": "error",
                     "message": f"PageSpeed API failed for {strategy}",
@@ -359,6 +607,9 @@ def check_technical_foundation(website_url: str) -> dict:
                     "details": response.text,
                     "llms_txt": llms_txt_result,
                     "json_ld": json_ld_result,
+                    "nap_consistency": nap_consistency_result,
+                    "DDI_technical_foundation_Result": ddi_technical_foundation_result,
+                    "max_technical_foundation_Score": MAX_DDI_TECHNICAL_FOUNDATION_SCORE,
                 }
 
             strategy_result = _extract_strategy_result(
@@ -384,8 +635,24 @@ def check_technical_foundation(website_url: str) -> dict:
         f"{pagespeed_score['score']}/{pagespeed_score['max_score']}"
     )
 
+    _log_section("Technical Foundation — DDI Final Summary")
+    ddi_technical_foundation_result = calculate_ddi_technical_foundation_score(
+        pagespeed_score,
+        llms_txt_result,
+        json_ld_result,
+        nap_consistency_result,
+    )
+
     logger.info(
         f"technical_foundation: analysis completed successfully for url='{website_url}'"
+    )
+    logger.info(
+        f'technical_foundation: "DDI_technical_foundation_Result": '
+        f"{ddi_technical_foundation_result}"
+    )
+    logger.info(
+        f'technical_foundation: "max_technical_foundation_Score": '
+        f"{MAX_DDI_TECHNICAL_FOUNDATION_SCORE}"
     )
     print(f"\nTechnical foundation analysis completed for: {website_url}\n")
 
@@ -396,4 +663,7 @@ def check_technical_foundation(website_url: str) -> dict:
         "pagespeed_score": pagespeed_score,
         "llms_txt": llms_txt_result,
         "json_ld": json_ld_result,
+        "nap_consistency": nap_consistency_result,
+        "DDI_technical_foundation_Result": ddi_technical_foundation_result,
+        "max_technical_foundation_Score": MAX_DDI_TECHNICAL_FOUNDATION_SCORE,
     }
