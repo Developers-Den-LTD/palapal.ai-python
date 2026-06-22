@@ -10,12 +10,13 @@ from services.logger_services import logger
 
 PAGESPEED_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 STRATEGIES = ["mobile", "desktop"]
-MAX_PAGESPEED_SCORE = 4
+MAX_PAGESPEED_SCORE = 2.5
 MAX_LLMS_TXT_SCORE = 5
 MAX_JSON_LD_SCORE = 5
-MAX_NAP_CONSISTENCY_SCORE = 6
+MAX_NAP_CONSISTENCY_SCORE = 5
+RAW_MAX_STRATEGY_SCORE = 4
 MAX_DDI_TECHNICAL_FOUNDATION_SCORE = (
-    MAX_PAGESPEED_SCORE
+    MAX_PAGESPEED_SCORE * 2
     + MAX_LLMS_TXT_SCORE
     + MAX_JSON_LD_SCORE
     + MAX_NAP_CONSISTENCY_SCORE
@@ -80,21 +81,17 @@ def _calculate_single_strategy_score(strategy_result: dict | None) -> dict:
     lcp_pts = _score_lcp(lcp_seconds)
     performance_pts = _score_performance(performance_score)
     strategy_pts = 1
+    raw_score = lcp_pts + performance_pts + strategy_pts
+    score = round((raw_score / RAW_MAX_STRATEGY_SCORE) * MAX_PAGESPEED_SCORE, 2)
 
     return {
-        "score": lcp_pts + performance_pts + strategy_pts,
+        "score": score,
         "lcp_seconds": lcp_seconds,
         "lcp_pts": lcp_pts,
         "performance_pts": performance_pts,
         "strategy_pts": strategy_pts,
         "performance_score": performance_score,
     }
-
-
-def _average(values: list[float]) -> float | None:
-    if not values:
-        return None
-    return round(sum(values) / len(values), 2)
 
 
 def calculate_pagespeed_score(pagespeed_data: dict) -> dict:
@@ -111,32 +108,8 @@ def calculate_pagespeed_score(pagespeed_data: dict) -> dict:
     mobile_score = _calculate_single_strategy_score(mobile_result)
     desktop_score = _calculate_single_strategy_score(desktop_result)
 
-    strategy_scores = [mobile_score["score"], desktop_score["score"]]
-    avg_score = _average([float(score) for score in strategy_scores]) or 0
-
-    lcp_values = [
-        value
-        for value in (mobile_score["lcp_seconds"], desktop_score["lcp_seconds"])
-        if value is not None
-    ]
-    avg_lcp_seconds = _average(lcp_values)
-    avg_lcp_pts = _average([float(mobile_score["lcp_pts"]), float(desktop_score["lcp_pts"])]) or 0
-    avg_performance_pts = (
-        _average([float(mobile_score["performance_pts"]), float(desktop_score["performance_pts"])])
-        or 0
-    )
-    avg_strategy_pts = (
-        _average([float(mobile_score["strategy_pts"]), float(desktop_score["strategy_pts"])])
-        or 0
-    )
-
     score_result = {
-        "score": avg_score,
         "max_score": MAX_PAGESPEED_SCORE,
-        "lcp_seconds": avg_lcp_seconds,
-        "lcp_pts": avg_lcp_pts,
-        "performance_pts": avg_performance_pts,
-        "strategy_pts": avg_strategy_pts,
         "mobile": mobile_score,
         "desktop": desktop_score,
     }
@@ -144,8 +117,7 @@ def calculate_pagespeed_score(pagespeed_data: dict) -> dict:
     logger.info(
         "technical_foundation: pagespeed score calculated — "
         f"mobile={mobile_score['score']}/{MAX_PAGESPEED_SCORE}, "
-        f"desktop={desktop_score['score']}/{MAX_PAGESPEED_SCORE}, "
-        f"average={avg_score}/{MAX_PAGESPEED_SCORE}"
+        f"desktop={desktop_score['score']}/{MAX_PAGESPEED_SCORE}"
     )
     logger.info(
         "technical_foundation: mobile breakdown — "
@@ -160,7 +132,7 @@ def calculate_pagespeed_score(pagespeed_data: dict) -> dict:
         f"strategy_pts={desktop_score['strategy_pts']}"
     )
     print(
-        f"\nPageSpeed Score (average): {avg_score}/{MAX_PAGESPEED_SCORE}\n"
+        f"\nPageSpeed Scores:\n"
         f"  Mobile  : {mobile_score['score']}/{MAX_PAGESPEED_SCORE} "
         f"(LCP={mobile_score['lcp_pts']}, Performance={mobile_score['performance_pts']}, "
         f"Strategy={mobile_score['strategy_pts']})\n"
@@ -526,23 +498,29 @@ def calculate_ddi_technical_foundation_score(
     json_ld_result: dict,
     nap_consistency_result: dict,
 ) -> float:
-    pagespeed_points = float((pagespeed_score or {}).get("score") or 0)
+    mobile_points = float((pagespeed_score or {}).get("mobile", {}).get("score") or 0)
+    desktop_points = float((pagespeed_score or {}).get("desktop", {}).get("score") or 0)
     llms_points = float(llms_txt_result.get("score") or 0)
     json_ld_points = float(json_ld_result.get("score") or 0)
     nap_points = float(nap_consistency_result.get("score") or 0)
 
-    total = round(pagespeed_points + llms_points + json_ld_points + nap_points, 2)
+    total = round(
+        mobile_points + desktop_points + llms_points + json_ld_points + nap_points,
+        2,
+    )
 
     logger.info(
         "technical_foundation: DDI score calculated — "
-        f"pagespeed={pagespeed_points}/{MAX_PAGESPEED_SCORE}, "
+        f"mobile={mobile_points}/{MAX_PAGESPEED_SCORE}, "
+        f"desktop={desktop_points}/{MAX_PAGESPEED_SCORE}, "
         f"llms_txt={llms_points}/{MAX_LLMS_TXT_SCORE}, "
         f"json_ld={json_ld_points}/{MAX_JSON_LD_SCORE}, "
         f"nap={nap_points}/{MAX_NAP_CONSISTENCY_SCORE}, "
         f"total={total}/{MAX_DDI_TECHNICAL_FOUNDATION_SCORE}"
     )
 
-    print("pagespeed result          =", pagespeed_points)
+    print("mobile pagespeed result   =", mobile_points)
+    print("desktop pagespeed result  =", desktop_points)
     print("llms_txt result           =", llms_points)
     print("json_ld result            =", json_ld_points)
     print("nap_consistency result    =", nap_points)
@@ -631,8 +609,9 @@ def check_technical_foundation(website_url: str) -> dict:
     _log_section("Technical Foundation — PageSpeed Score")
     pagespeed_score = calculate_pagespeed_score({"results": results})
     logger.info(
-        f"technical_foundation: DDI PageSpeed score = "
-        f"{pagespeed_score['score']}/{pagespeed_score['max_score']}"
+        "technical_foundation: DDI PageSpeed scores — "
+        f"mobile={pagespeed_score['mobile']['score']}/{pagespeed_score['max_score']}, "
+        f"desktop={pagespeed_score['desktop']['score']}/{pagespeed_score['max_score']}"
     )
 
     _log_section("Technical Foundation — DDI Final Summary")

@@ -441,4 +441,5 @@ def scrape_reviews(payload: ScrapeRequest) -> dict:
         f"scrape_reviews: completed google={len(google['reviews'])}, "
         f"yelp={len(yelp['reviews'])}, tripadvisor={len(tripadvisor['reviews'])}"
     )
+    logger.info("scrape_reviews: %s", result)
     return result

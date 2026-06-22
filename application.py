@@ -1,6 +1,6 @@
 import uvicorn
 from fastapi import FastAPI
-from routes import home_route, url_finder_route, scrapper, AI_visibility, Review_Velocity, technical_foundation
+from routes import home_route, url_finder_route, scrapper, AI_visibility, Review_Velocity, technical_foundation, ddi_score_route, pending_responses
 
 from services.model_loader import load_sentiment_model
 
@@ -15,6 +15,8 @@ application.include_router(scrapper.router)
 application.include_router(AI_visibility.router)
 application.include_router(Review_Velocity.router)
 application.include_router(technical_foundation.router)
+application.include_router(ddi_score_route.router)
+application.include_router(pending_responses.router)
 
 
 if __name__ == "__main__":
