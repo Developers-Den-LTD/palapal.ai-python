@@ -10,13 +10,13 @@ from services.logger_services import logger
 
 PAGESPEED_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 STRATEGIES = ["mobile", "desktop"]
-MAX_PAGESPEED_SCORE = 2.5
+MAX_PAGESPEED_SCORE = 4
+RAW_MAX_STRATEGY_SCORE = 4  # max raw pts per strategy: LCP(2) + performance(1) + presence(1)
 MAX_LLMS_TXT_SCORE = 5
 MAX_JSON_LD_SCORE = 5
-MAX_NAP_CONSISTENCY_SCORE = 5
-RAW_MAX_STRATEGY_SCORE = 4
+MAX_NAP_CONSISTENCY_SCORE = 6
 MAX_DDI_TECHNICAL_FOUNDATION_SCORE = (
-    MAX_PAGESPEED_SCORE * 2
+    MAX_PAGESPEED_SCORE
     + MAX_LLMS_TXT_SCORE
     + MAX_JSON_LD_SCORE
     + MAX_NAP_CONSISTENCY_SCORE
@@ -108,8 +108,23 @@ def calculate_pagespeed_score(pagespeed_data: dict) -> dict:
     mobile_score = _calculate_single_strategy_score(mobile_result)
     desktop_score = _calculate_single_strategy_score(desktop_result)
 
+    combined_score = round(
+        (mobile_score["score"] + desktop_score["score"]) / len(STRATEGIES), 2
+    )
+    avg_lcp_pts = round(
+        (mobile_score["lcp_pts"] + desktop_score["lcp_pts"]) / len(STRATEGIES), 2
+    )
+    avg_performance_pts = round(
+        (mobile_score["performance_pts"] + desktop_score["performance_pts"])
+        / len(STRATEGIES),
+        2,
+    )
+
     score_result = {
+        "score": combined_score,
         "max_score": MAX_PAGESPEED_SCORE,
+        "lcp_pts": avg_lcp_pts,
+        "performance_pts": avg_performance_pts,
         "mobile": mobile_score,
         "desktop": desktop_score,
     }
@@ -133,6 +148,7 @@ def calculate_pagespeed_score(pagespeed_data: dict) -> dict:
     )
     print(
         f"\nPageSpeed Scores:\n"
+        f"  Combined: {combined_score}/{MAX_PAGESPEED_SCORE}\n"
         f"  Mobile  : {mobile_score['score']}/{MAX_PAGESPEED_SCORE} "
         f"(LCP={mobile_score['lcp_pts']}, Performance={mobile_score['performance_pts']}, "
         f"Strategy={mobile_score['strategy_pts']})\n"
@@ -498,29 +514,23 @@ def calculate_ddi_technical_foundation_score(
     json_ld_result: dict,
     nap_consistency_result: dict,
 ) -> float:
-    mobile_points = float((pagespeed_score or {}).get("mobile", {}).get("score") or 0)
-    desktop_points = float((pagespeed_score or {}).get("desktop", {}).get("score") or 0)
+    pagespeed_points = float((pagespeed_score or {}).get("score") or 0)
     llms_points = float(llms_txt_result.get("score") or 0)
     json_ld_points = float(json_ld_result.get("score") or 0)
     nap_points = float(nap_consistency_result.get("score") or 0)
 
-    total = round(
-        mobile_points + desktop_points + llms_points + json_ld_points + nap_points,
-        2,
-    )
+    total = round(pagespeed_points + llms_points + json_ld_points + nap_points, 2)
 
     logger.info(
         "technical_foundation: DDI score calculated — "
-        f"mobile={mobile_points}/{MAX_PAGESPEED_SCORE}, "
-        f"desktop={desktop_points}/{MAX_PAGESPEED_SCORE}, "
+        f"pagespeed={pagespeed_points}/{MAX_PAGESPEED_SCORE}, "
         f"llms_txt={llms_points}/{MAX_LLMS_TXT_SCORE}, "
         f"json_ld={json_ld_points}/{MAX_JSON_LD_SCORE}, "
         f"nap={nap_points}/{MAX_NAP_CONSISTENCY_SCORE}, "
         f"total={total}/{MAX_DDI_TECHNICAL_FOUNDATION_SCORE}"
     )
 
-    print("mobile pagespeed result   =", mobile_points)
-    print("desktop pagespeed result  =", desktop_points)
+    print("pagespeed result          =", pagespeed_points)
     print("llms_txt result           =", llms_points)
     print("json_ld result            =", json_ld_points)
     print("nap_consistency result    =", nap_points)
@@ -609,9 +619,8 @@ def check_technical_foundation(website_url: str) -> dict:
     _log_section("Technical Foundation — PageSpeed Score")
     pagespeed_score = calculate_pagespeed_score({"results": results})
     logger.info(
-        "technical_foundation: DDI PageSpeed scores — "
-        f"mobile={pagespeed_score['mobile']['score']}/{pagespeed_score['max_score']}, "
-        f"desktop={pagespeed_score['desktop']['score']}/{pagespeed_score['max_score']}"
+        f"technical_foundation: DDI PageSpeed score = "
+        f"{pagespeed_score['score']}/{pagespeed_score['max_score']}"
     )
 
     _log_section("Technical Foundation — DDI Final Summary")
