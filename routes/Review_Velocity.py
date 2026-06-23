@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from schema.review_velocity_schema import ReviewVelocityRequest
 from services.Review_velocity_services import analyze_reputation_score
 from services.logger_services import logger
 from utils.auth_utils import verify_secret_key
@@ -15,10 +16,13 @@ router = APIRouter(
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(verify_secret_key)],
 )
-def review_velocity():
-    logger.info("review_velocity route: POST /api/review-velocity — request received")
+def review_velocity(payload: ReviewVelocityRequest):
+    logger.info(
+        "review_velocity route: POST /api/review-velocity — request received "
+        f"business='{payload.business_name}'"
+    )
     try:
-        result = analyze_reputation_score()
+        result = analyze_reputation_score(payload.business_name)
         if result["status"] == "success":
             logger.info(
                 "review_velocity route: request completed successfully — "

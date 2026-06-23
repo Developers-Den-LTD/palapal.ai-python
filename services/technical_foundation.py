@@ -1,12 +1,12 @@
 import httpx
 import json
 import re
-from pathlib import Path
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 from core.config import settings
 from services.logger_services import logger
+from utils.scraped_result_paths import get_scraped_result_path, slugify_folder_name
 
 PAGESPEED_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 STRATEGIES = ["mobile", "desktop"]
@@ -21,7 +21,6 @@ MAX_DDI_TECHNICAL_FOUNDATION_SCORE = (
     + MAX_JSON_LD_SCORE
     + MAX_NAP_CONSISTENCY_SCORE
 )
-SCRAPED_RESULT_PATH = Path(__file__).resolve().parent.parent / "scraped_result.json"
 NAP_PLATFORMS = ("google_maps", "yelp", "tripadvisor")
 JSON_LD_HEADERS = {
     "User-Agent": (
@@ -410,11 +409,22 @@ def _values_match(values: list[str]) -> bool:
     return len(set(values)) == 1
 
 
-def check_nap_consistency() -> dict:
+def check_nap_consistency(business_name: str) -> dict:
     _log_section("Technical Foundation — NAP consistency check started")
 
-    if not SCRAPED_RESULT_PATH.exists():
-        message = f"Scraped result file not found: {SCRAPED_RESULT_PATH}"
+    business_name = business_name.strip()
+    folder_slug = slugify_folder_name(business_name)
+    scraped_result_path = get_scraped_result_path(business_name)
+
+    logger.info(
+        f"technical_foundation: business_name='{business_name}', folder_slug='{folder_slug}'"
+    )
+    logger.info(f"technical_foundation: looking for scraped data at {scraped_result_path}")
+
+    if not scraped_result_path.exists():
+        message = (
+            f"No scraped result is present against this business name: '{business_name}'."
+        )
         logger.warning(f"technical_foundation: {message}")
         result = {
             "score": 0,
@@ -434,7 +444,7 @@ def check_nap_consistency() -> dict:
         )
         return result
 
-    with open(SCRAPED_RESULT_PATH, encoding="utf-8") as f:
+    with open(scraped_result_path, encoding="utf-8") as f:
         scraped_data = json.load(f)
 
     platform_nap = {
@@ -540,10 +550,10 @@ def calculate_ddi_technical_foundation_score(
     return total
 
 
-def check_technical_foundation(website_url: str) -> dict:
+def check_technical_foundation(website_url: str, business_name: str) -> dict:
     llms_txt_result = check_llms_txt(website_url)
     json_ld_result = check_json_ld(website_url)
-    nap_consistency_result = check_nap_consistency()
+    nap_consistency_result = check_nap_consistency(business_name)
 
     _log_section("Technical Foundation — PageSpeed analysis started")
     logger.info(f"technical_foundation: website_url='{website_url}'")

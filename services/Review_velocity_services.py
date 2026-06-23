@@ -3,8 +3,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from services.logger_services import logger
-
-SCRAPED_RESULT_PATH = Path(__file__).resolve().parent.parent / "scraped_result.json"
+from utils.scraped_result_paths import get_scraped_result_path, slugify_folder_name
 
 PLATFORM_MAP = {
     "google_maps": "google",
@@ -57,7 +56,7 @@ def _is_replied(owner_reply) -> bool:
 
 
 def _load_reviews(scraped_data: dict) -> list[dict]:
-    _log_section("Step 1 — Loading reviews from scraped_result.json")
+    _log_section("Step 1 — Loading reviews from scraping_results")
     reviews = []
 
     for platform_key, platform_name in PLATFORM_MAP.items():
@@ -259,46 +258,63 @@ def _calculate_response_rate(reviews: list[dict], reference_date: datetime) -> d
     }
 
 
-def analyze_reputation_score() -> dict:
+def _error_result(message: str) -> dict:
+    return {
+        "status": "error",
+        "message": message,
+        "reviews": [],
+        "review_velocity": {
+            "reviews_last_30_days": 0,
+            "score": 0,
+            "max_score": MAX_REVIEW_VELOCITY_SCORE,
+            "label": "Stale profile",
+            "recent_reviews": [],
+        },
+        "star_rating_decay": {
+            "weighted_average_rating": 0.0,
+            "total_weighted_reviews": 0,
+            "score": 0,
+            "max_score": MAX_STAR_RATING_DECAY_SCORE,
+        },
+        "response_rate": {
+            "reviews_last_90_days": 0,
+            "replied_reviews": 0,
+            "response_rate_pct": 0.0,
+            "score": 0,
+            "max_score": MAX_RESPONSE_RATE_SCORE,
+            "label": "< 20% response rate",
+        },
+        "DDI_Reputation_Score_Result": 0,
+        "max_DDI_Reputation_Score": MAX_DDI_REPUTATION_SCORE,
+    }
+
+
+def analyze_reputation_score(business_name: str) -> dict:
     _log_section("Reputation Score analysis started")
 
-    if not SCRAPED_RESULT_PATH.exists():
-        logger.warning(
-            f"review_velocity: scraped_result.json not found at {SCRAPED_RESULT_PATH}"
-        )
-        return {
-            "status": "error",
-            "message": "No scraped_result.json found. Run scrape API first.",
-            "reviews": [],
-            "review_velocity": {
-                "reviews_last_30_days": 0,
-                "score": 0,
-                "max_score": MAX_REVIEW_VELOCITY_SCORE,
-                "label": "Stale profile",
-                "recent_reviews": [],
-            },
-            "star_rating_decay": {
-                "weighted_average_rating": 0.0,
-                "total_weighted_reviews": 0,
-                "score": 0,
-                "max_score": MAX_STAR_RATING_DECAY_SCORE,
-            },
-            "response_rate": {
-                "reviews_last_90_days": 0,
-                "replied_reviews": 0,
-                "response_rate_pct": 0.0,
-                "score": 0,
-                "max_score": MAX_RESPONSE_RATE_SCORE,
-                "label": "< 20% response rate",
-            },
-            "DDI_Reputation_Score_Result": 0,
-            "max_DDI_Reputation_Score": MAX_DDI_REPUTATION_SCORE,
-        }
+    business_name = business_name.strip()
+    folder_slug = slugify_folder_name(business_name)
+    scraped_result_path = get_scraped_result_path(business_name)
 
-    with open(SCRAPED_RESULT_PATH, "r", encoding="utf-8") as file:
+    logger.info(
+        f"review_velocity: business_name='{business_name}', folder_slug='{folder_slug}'"
+    )
+    logger.info(f"review_velocity: looking for scraped data at {scraped_result_path}")
+
+    if not scraped_result_path.exists():
+        logger.warning(
+            f"review_velocity: scraped_result.json not found at {scraped_result_path}"
+        )
+        return _error_result(
+            f"No scraped data found for '{business_name}'. "
+            f"Expected file at scraping_results/{folder_slug}/scraped_result.json. "
+            "Run scrape API first."
+        )
+
+    with open(scraped_result_path, "r", encoding="utf-8") as file:
         scraped_data = json.load(file)
 
-    business = scraped_data.get("business", "Unknown")
+    business = scraped_data.get("business", business_name)
     reference_date = _parse_reference_date(scraped_data)
 
     logger.info(f"review_velocity: business='{business}'")
@@ -346,6 +362,7 @@ def analyze_reputation_score() -> dict:
 
     result = {
         "status": "success",
+        "business_name": business_name,
         "business": scraped_data.get("business"),
         "scraped_at": scraped_data.get("scraped_at"),
         "reference_date": reference_date.strftime(DATE_FORMAT),

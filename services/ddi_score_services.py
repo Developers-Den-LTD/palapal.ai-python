@@ -59,9 +59,13 @@ async def calculate_ddi_score(payload: DDIScoreRequest) -> dict:
 
     ai_task = asyncio.to_thread(analyze_ai_visibility, ai_payload)
 
-    reputation_task = asyncio.to_thread(analyze_reputation_score)
+    reputation_task = asyncio.to_thread(
+        analyze_reputation_score, payload.business_name
+    )
     
-    technical_task = asyncio.to_thread(check_technical_foundation, payload.website_url)
+    technical_task = asyncio.to_thread(
+        check_technical_foundation, payload.website_url, payload.business_name
+    )
 
     ai_result, reputation_result, technical_result = await asyncio.gather(
         ai_task,

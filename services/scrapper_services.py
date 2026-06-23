@@ -8,25 +8,38 @@ from apify_client import ApifyClient
 from core.config import settings
 from schema.scrapper import ScrapeRequest
 from services.logger_services import logger
+from utils.scraped_result_paths import RESULTS_BASE_PATH, slugify_folder_name
 
 APIFY_API_TOKEN = settings.Apify_API
 client = ApifyClient(APIFY_API_TOKEN)
 
-RESULT_PATH = Path(__file__).resolve().parent.parent / "scraped_result.json"
-TEMP_PATH = RESULT_PATH.with_suffix(".json.tmp")
 
-
-def save_scraped_result(data: dict) -> None:
+def save_scraped_result(data: dict, business_name: str) -> None:
     try:
+        # 1. Clean the business name for file paths
+        folder_slug = slugify_folder_name(business_name)
+        
+        # 2. Build dynamic paths: scraping_results/<business_slug>/scraped_result.json
+        business_dir = RESULTS_BASE_PATH / folder_slug
+        
+        # Automatically creates "scraping_results" and the subfolder if they don't exist
+        business_dir.mkdir(parents=True, exist_ok=True)
+        
+        result_path = business_dir / "scraped_result.json"
+        temp_path = result_path.with_suffix(".json.tmp")
+
+        # 3. Write data safely using a temp file
         json_text = json.dumps(data, indent=2, ensure_ascii=False)
-        with open(TEMP_PATH, "w", encoding="utf-8") as f:
+        with open(temp_path, "w", encoding="utf-8") as f:
             f.write(json_text)
-        os.replace(TEMP_PATH, RESULT_PATH)
-        logger.info(f"save_scraped_result: saved to {RESULT_PATH}")
+            
+        os.replace(temp_path, result_path)
+        logger.info(f"save_scraped_result: saved to {result_path}")
+        
     except (OSError, TypeError, ValueError) as e:
-        if TEMP_PATH.exists():
-            TEMP_PATH.unlink(missing_ok=True)
-        logger.exception(f"save_scraped_result: failed to write {RESULT_PATH} — {e}")
+        if 'temp_path' in locals() and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        logger.exception(f"save_scraped_result: failed to write result for {business_name} — {e}")
         raise
 
 
@@ -435,11 +448,12 @@ def scrape_reviews(payload: ScrapeRequest) -> dict:
         },
     }
 
-    save_scraped_result(result)
+    save_scraped_result(result, payload.business_name)
 
     logger.info(
         f"scrape_reviews: completed google={len(google['reviews'])}, "
         f"yelp={len(yelp['reviews'])}, tripadvisor={len(tripadvisor['reviews'])}"
     )
+    
     logger.info("scrape_reviews: %s", result)
     return result

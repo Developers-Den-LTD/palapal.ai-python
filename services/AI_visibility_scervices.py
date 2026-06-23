@@ -1,6 +1,5 @@
 import json
 import re
-from pathlib import Path
 
 from openai import OpenAI
 
@@ -8,6 +7,7 @@ from core.config import settings
 from schema.AI_visibility_schema import AIVisibilityRequest
 from services.logger_services import logger
 from services.model_loader import load_sentiment_model
+from utils.scraped_result_paths import get_scraped_result_path, slugify_folder_name
 
 TOTAL_QUESTIONS = 10
 MAX_CITATION_SCORE = 15
@@ -21,7 +21,6 @@ POSITION_POINTS = {
     "last": 2,
 }
 
-SCRAPED_RESULT_PATH = Path(__file__).resolve().parent.parent / "scraped_result.json"
 REVIEW_PLATFORMS = ("google_maps", "yelp", "tripadvisor")
 
 client = OpenAI(
@@ -364,14 +363,22 @@ def _calculate_sentiment_score(sentiment_data: dict) -> tuple[int, dict]:
     return final_score, breakdown
 
 
-def _calculate_sentiment_analysis() -> dict:
+def _calculate_sentiment_analysis(business_name: str) -> dict:
     _log_section("Step 5 — Sentiment analysis (scraped reviews)")
 
     model = load_sentiment_model()
 
-    if not SCRAPED_RESULT_PATH.exists():
+    folder_slug = slugify_folder_name(business_name)
+    scraped_result_path = get_scraped_result_path(business_name)
+
+    logger.info(
+        f"ai_visibility: business_name='{business_name}', folder_slug='{folder_slug}'"
+    )
+    logger.info(f"ai_visibility: looking for scraped data at {scraped_result_path}")
+
+    if not scraped_result_path.exists():
         logger.warning(
-            f"ai_visibility: scraped_result.json not found at {SCRAPED_RESULT_PATH}"
+            f"ai_visibility: scraped_result.json not found at {scraped_result_path}"
         )
         return {
             "positive": 0,
@@ -392,10 +399,10 @@ def _calculate_sentiment_analysis() -> dict:
                 "negative_pct": 0.0,
                 "total_comments": 0,
             },
-            "message": "No scraped_result.json found. Run scrape API first.",
+            "message": f"No scraped result is present against this business name: '{business_name}'.",
         }
 
-    with open(SCRAPED_RESULT_PATH, "r", encoding="utf-8") as file:
+    with open(scraped_result_path, "r", encoding="utf-8") as file:
         scraped_data = json.load(file)
 
     positive = 0
@@ -508,7 +515,7 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
     
     
     # ---------------- Calculate Sentiment Analysis ---------------- #
-    sentiment_analysis = _calculate_sentiment_analysis()
+    sentiment_analysis = _calculate_sentiment_analysis(business_name)
 
 
     citation_result = citation_score["score"]

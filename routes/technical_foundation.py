@@ -11,13 +11,14 @@ router = APIRouter(
 )
 
 
-def run_technical_foundation(website_url: str):
+def run_technical_foundation(website_url: str, business_name: str):
     try:
         logger.info(
-            f"technical_foundation background: started — website='{website_url}'"
+            f"technical_foundation background: started — "
+            f"website='{website_url}', business='{business_name}'"
         )
 
-        result = check_technical_foundation(website_url)
+        result = check_technical_foundation(website_url, business_name)
 
         if result["status"] == "success":
             pagespeed_score = result.get("pagespeed_score", {})
@@ -73,10 +74,12 @@ def technical_foundation(
     background_tasks.add_task(
         run_technical_foundation,
         payload.website_url,
+        payload.business_name,
     )
 
     return {
         "status": "accepted",
         "message": "Technical foundation analysis started in background.",
+        "business_name": payload.business_name,
         "website_url": payload.website_url,
     }
