@@ -21,7 +21,8 @@ def _significant_words(text: str) -> list[str]:
 
 
 def is_valid_yelp(url: str) -> bool:
-    return "yelp.com/biz/" in url
+    # Accept international Yelp domains too (e.g. yelp.co.uk, yelp.ca) as long as it's a business page.
+    return bool(re.search(r"yelp\.[a-z.]+/biz/", url, flags=re.IGNORECASE))
 
 
 def is_valid_tripadvisor(url: str) -> bool:
@@ -32,16 +33,15 @@ def is_valid_tripadvisor(url: str) -> bool:
     )
 
 
-def _name_words_in_url(url: str, business_name: str) -> bool:
-    """All significant name words must appear in the listing URL slug."""
+def _match_score(text: str, business_name: str) -> tuple[int, int]:
+    """Return (matches, total_words) for significant business-name words found in text."""
     name_words = _significant_words(business_name)
     if not name_words:
-        return False
+        return 0, 0
 
-    normalized_url = _normalize(url)
-    matches = sum(1 for w in name_words if w in normalized_url)
-    required = len(name_words) if len(name_words) <= 4 else max(2, (len(name_words) + 1) // 2)
-    return matches >= required
+    normalized_text = _normalize(text)
+    matches = sum(1 for w in name_words if _normalize(w) and _normalize(w) in normalized_text)
+    return matches, len(name_words)
 
 
 def _normalize_yelp_url(url: str) -> str:
@@ -49,8 +49,14 @@ def _normalize_yelp_url(url: str) -> str:
 
 
 def result_matches_business(*, url: str, business_name: str) -> bool:
-    """Confirm the listing URL slug belongs to the requested business."""
-    return _name_words_in_url(url, business_name)
+    """Loose match: require "some" overlap, not a perfect URL-slug match."""
+    matches, total = _match_score(url, business_name)
+    if total == 0:
+        return False
+
+    # If the business name has many words, Yelp/TA slugs often omit some of them.
+    # So accept if at least 2 significant words match, OR at least ~half match.
+    return matches >= 2 or matches >= max(1, (total + 1) // 2)
 
 
 def _extract_platform_urls(
@@ -63,10 +69,23 @@ def _extract_platform_urls(
     yelp_url = None
     tripadvisor_url = None
 
-    for r in results:
-        url = r.get("href", "")
+    # Fallback candidates when strict matching fails (still platform-valid).
+    yelp_candidate = None
+    tripadvisor_candidate = None
 
-        if not result_matches_business(url=url, business_name=business_name):
+    for r in results:
+        url = r.get("href", "") or ""
+        title = r.get("title", "") or ""
+        body = r.get("body", "") or ""
+        match_text = f"{url} {title} {body}"
+
+        if need_yelp and yelp_candidate is None and is_valid_yelp(url):
+            yelp_candidate = _normalize_yelp_url(url)
+
+        if need_tripadvisor and tripadvisor_candidate is None and is_valid_tripadvisor(url):
+            tripadvisor_candidate = url
+
+        if not result_matches_business(url=match_text, business_name=business_name):
             continue
 
         if need_yelp and yelp_url is None and is_valid_yelp(url):
@@ -80,7 +99,8 @@ def _extract_platform_urls(
         if (not need_yelp or yelp_url) and (not need_tripadvisor or tripadvisor_url):
             break
 
-    return yelp_url, tripadvisor_url
+    # If we didn't get a confident match, return best platform-valid candidates.
+    return yelp_url or yelp_candidate, tripadvisor_url or tripadvisor_candidate
 
 
 def find_business_links(payload: BusinessSearchRequest) -> dict:

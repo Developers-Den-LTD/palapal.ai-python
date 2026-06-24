@@ -10,7 +10,7 @@ if not os.path.exists('logs'):
     os.makedirs('logs')
 
 # Create logger instance with application name
-logger = logging.getLogger("overtime-ai")
+logger = logging.getLogger("palapal-ai")
 logger.setLevel(logging.DEBUG)  # Set to DEBUG to capture all log levels
 
 # Create formatter for log messages

@@ -1,5 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+/__pycache__
+routes/__pycache__
 *.pyc
 
 
@@ -13,6 +15,6 @@ venv/
 logs/
 
 
-scraped_result.json
+scraping_results/
 
 models/

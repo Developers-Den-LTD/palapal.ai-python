@@ -102,7 +102,7 @@ def _fetch_answers(business_type: str, business_loc: str, questions_text: str) -
                 {
                     "role": "user",
                     "content": f"""Answer each of the following questions about {business_type}s in {business_loc}.
-For each answer, you must list the top 7-10 specific business names.
+For each answer, you must list the top 9-10 specific business names.
 
 Format your response exactly like this:
 Q1: [question]

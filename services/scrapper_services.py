@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 import os
+import re
 
 from apify_client import ApifyClient
 
@@ -342,26 +343,46 @@ def _scrape_tripadvisor(tripadvisor_url: str | None):
             "business_phone": business_phone,
             "reviews": tripadvisor_reviews,
         }
+    clean_url = re.sub(r'-or\d+-', '-', tripadvisor_url)
 
     try:
-        logger.info(
-            f"scrape_reviews: starting TripAdvisor detail scrape (maxcopell/tripadvisor) "
-            f"url='{tripadvisor_url}'"
-        )
-        detail_run = client.actor("maxcopell/tripadvisor").call(run_input={
-            "startUrls": [{"url": tripadvisor_url}],
+        # --- NAP: crawlerbros/tripadvisor-scraper ---
+        logger.info(f"scrape_reviews: TripAdvisor NAP scrape (crawlerbros) url='{clean_url}'")
+        detail_run = client.actor("crawlerbros/tripadvisor-scraper").call(run_input={
+            "startUrls": [clean_url],
+            "maxItems": 1,
+            "placeType": "all",
         })
         detail_items = client.dataset(get_dataset_id(detail_run)).list_items().items
-        if detail_items:
-            biz_info = detail_items[0]
-            business_name = biz_info.get("name") or biz_info.get("title") or business_name
-            business_address = biz_info.get("address") or business_address
-            business_phone = biz_info.get("phone") or business_phone
+        logger.info(f"scrape_reviews: TripAdvisor NAP raw keys={list(detail_items[0].keys()) if detail_items else 'no items'}")
 
-        logger.info(
-            f"scrape_reviews: starting TripAdvisor reviews scrape (maxcopell/tripadvisor-reviews) "
-            f"url='{tripadvisor_url}'"
-        )
+        if detail_items:
+            biz = detail_items[0]
+            business_name = (
+                biz.get("name")
+                or biz.get("title")
+                or biz.get("hotelName")
+                or "N/A"
+            )
+            addr = biz.get("address") or biz.get("addressObj") or {}
+            if isinstance(addr, dict):
+                parts = [
+                    addr.get("street1"), addr.get("street2"),
+                    addr.get("city"), addr.get("postalcode"),
+                    addr.get("country")
+                ]
+                business_address = ", ".join(p for p in parts if p) or "N/A"
+            elif isinstance(addr, str):
+                business_address = addr or "N/A"
+
+            business_phone = (
+                biz.get("phone")
+                or biz.get("telephone")
+                or biz.get("phoneNumber")
+                or "N/A"
+            )
+
+
         ta_run = client.actor("maxcopell/tripadvisor-reviews").call(run_input={
             "startUrls": [{"url": tripadvisor_url}],
             "maxReviews": 20,
