@@ -1,0 +1,38 @@
+name: Deploy Python API to EC2
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Deploy to EC2 via Rsync & Rebuild
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          HOST: ${{ secrets.EC2_HOST }}
+          USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          # Setup SSH key
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          
+          # Sync files to EC2 (exclude models folder as it's cached in a persistent volume on EC2)
+          rsync -avz -e "ssh -o StrictHostKeyChecking=no" \
+            --exclude='.git' \
+            --exclude='__pycache__' \
+            --exclude='models' \
+            --exclude='.env' \
+            ./ $USERNAME@$HOST:/home/ec2-user/palapal/palapal.ai-python/
+          
+          # Rebuild and restart python-api container
+          ssh -o StrictHostKeyChecking=no $USERNAME@$HOST \
+            "cd /home/ec2-user/palapal && docker compose up -d --build python-api"
