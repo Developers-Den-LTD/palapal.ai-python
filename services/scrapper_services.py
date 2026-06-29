@@ -9,7 +9,8 @@ from apify_client import ApifyClient
 from core.config import settings
 from schema.scrapper import ScrapeRequest
 from services.logger_services import logger
-from utils.scraped_result_paths import RESULTS_BASE_PATH, slugify_folder_name
+from services.s3_service import upload_scraped_result_to_s3
+from utils.scraped_result_paths import get_scraped_result_path
 
 APIFY_API_TOKEN = settings.Apify_API
 client = ApifyClient(APIFY_API_TOKEN)
@@ -17,26 +18,30 @@ client = ApifyClient(APIFY_API_TOKEN)
 
 def save_scraped_result(data: dict, business_name: str) -> None:
     try:
-        # 1. Clean the business name for file paths
-        folder_slug = slugify_folder_name(business_name)
-        
-        # 2. Build dynamic paths: scraping_results/<business_slug>/scraped_result.json
-        business_dir = RESULTS_BASE_PATH / folder_slug
-        
-        # Automatically creates "scraping_results" and the subfolder if they don't exist
-        business_dir.mkdir(parents=True, exist_ok=True)
-        
-        result_path = business_dir / "scraped_result.json"
+        business_name = business_name.strip()
+        # scraping_results/<business_slug>/scraped_result.json
+        result_path = get_scraped_result_path(business_name)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = result_path.with_suffix(".json.tmp")
 
-        # 3. Write data safely using a temp file
         json_text = json.dumps(data, indent=2, ensure_ascii=False)
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(json_text)
-            
+
         os.replace(temp_path, result_path)
-        logger.info(f"save_scraped_result: saved to {result_path}")
-        
+        logger.info(f"save_scraped_result: saved locally to {result_path}")
+
+        if not upload_scraped_result_to_s3(business_name, result_path):
+            logger.error(
+                f"save_scraped_result: S3 upload failed for '{business_name}' "
+                f"(local file kept at {result_path})"
+            )
+        else:
+            logger.info(
+                f"save_scraped_result: mirrored to S3 for '{business_name}' "
+                f"at scraping_results/{result_path.parent.name}/scraped_result.json"
+            )
+
     except (OSError, TypeError, ValueError) as e:
         if 'temp_path' in locals() and temp_path.exists():
             temp_path.unlink(missing_ok=True)

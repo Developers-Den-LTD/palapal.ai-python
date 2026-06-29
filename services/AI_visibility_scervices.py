@@ -7,7 +7,8 @@ from core.config import settings
 from schema.AI_visibility_schema import AIVisibilityRequest
 from services.logger_services import logger
 from services.model_loader import load_sentiment_model
-from utils.scraped_result_paths import get_scraped_result_path, slugify_folder_name
+from services.s3_service import load_scraped_result_data
+from utils.scraped_result_paths import slugify_folder_name
 
 TOTAL_QUESTIONS = 10
 MAX_CITATION_SCORE = 15
@@ -369,16 +370,17 @@ def _calculate_sentiment_analysis(business_name: str) -> dict:
     model = load_sentiment_model()
 
     folder_slug = slugify_folder_name(business_name)
-    scraped_result_path = get_scraped_result_path(business_name)
 
     logger.info(
         f"ai_visibility: business_name='{business_name}', folder_slug='{folder_slug}'"
     )
-    logger.info(f"ai_visibility: looking for scraped data at {scraped_result_path}")
 
-    if not scraped_result_path.exists():
+    try:
+        scraped_data = load_scraped_result_data(business_name)
+    except FileNotFoundError:
         logger.warning(
-            f"ai_visibility: scraped_result.json not found at {scraped_result_path}"
+            f"ai_visibility: scraped_result.json not found locally or in S3 "
+            f"for '{business_name}'"
         )
         return {
             "positive": 0,
@@ -401,9 +403,6 @@ def _calculate_sentiment_analysis(business_name: str) -> dict:
             },
             "message": f"No scraped result is present against this business name: '{business_name}'.",
         }
-
-    with open(scraped_result_path, "r", encoding="utf-8") as file:
-        scraped_data = json.load(file)
 
     positive = 0
     negative = 0

@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from services.logger_services import logger
-from utils.scraped_result_paths import get_scraped_result_path, slugify_folder_name
+from services.s3_service import load_scraped_result_data
+from utils.scraped_result_paths import slugify_folder_name
 
 PLATFORM_MAP = {
     "google_maps": "google",
@@ -294,25 +295,23 @@ def analyze_reputation_score(business_name: str) -> dict:
 
     business_name = business_name.strip()
     folder_slug = slugify_folder_name(business_name)
-    scraped_result_path = get_scraped_result_path(business_name)
 
     logger.info(
         f"review_velocity: business_name='{business_name}', folder_slug='{folder_slug}'"
     )
-    logger.info(f"review_velocity: looking for scraped data at {scraped_result_path}")
 
-    if not scraped_result_path.exists():
+    try:
+        scraped_data = load_scraped_result_data(business_name)
+    except FileNotFoundError:
         logger.warning(
-            f"review_velocity: scraped_result.json not found at {scraped_result_path}"
+            f"review_velocity: scraped_result.json not found locally or in S3 "
+            f"for '{business_name}'"
         )
         return _error_result(
             f"No scraped data found for '{business_name}'. "
             f"Expected file at scraping_results/{folder_slug}/scraped_result.json. "
             "Run scrape API first."
         )
-
-    with open(scraped_result_path, "r", encoding="utf-8") as file:
-        scraped_data = json.load(file)
 
     business = scraped_data.get("business", business_name)
     reference_date = _parse_reference_date(scraped_data)

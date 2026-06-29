@@ -1,0 +1,175 @@
+import json
+import os
+from pathlib import Path
+
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError, NoCredentialsError
+
+from core.config import settings
+from services.logger_services import logger
+from utils.scraped_result_paths import get_scraped_result_path, slugify_folder_name
+
+S3_KEY_PREFIX = "scraping_results"
+SCRAPED_RESULT_FILENAME = "scraped_result.json"
+
+
+def _get_s3_client():
+    return boto3.client(
+        "s3",
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        region_name=settings.AWS_REGION,
+        config=Config(signature_version="s3v4"),
+    )
+
+
+def get_s3_key(business_name: str) -> str:
+    folder_slug = slugify_folder_name(business_name)
+    return f"{S3_KEY_PREFIX}/{folder_slug}/{SCRAPED_RESULT_FILENAME}"
+
+
+def business_exists_in_s3(business_name: str) -> bool:
+    s3_key = get_s3_key(business_name)
+    try:
+        _get_s3_client().head_object(
+            Bucket=settings.AWS_S3_BUCKET,
+            Key=s3_key,
+        )
+        logger.info(f"s3_service: business data found in S3 — key={s3_key}")
+        return True
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("404", "NoSuchKey", "NotFound"):
+            logger.info(f"s3_service: business data not found in S3 — key={s3_key}")
+            return False
+        logger.error(f"s3_service: S3 head_object failed for key={s3_key} — {exc}")
+        return False
+    except NoCredentialsError as exc:
+        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
+        return False
+    except Exception as exc:
+        logger.error(f"s3_service: unexpected error checking S3 for key={s3_key} — {exc}")
+        return False
+
+
+def download_scraped_result_from_s3(
+    business_name: str,
+    local_path: Path | None = None,
+) -> bool:
+    local_path = local_path or get_scraped_result_path(business_name)
+    s3_key = get_s3_key(business_name)
+    temp_path = local_path.with_suffix(".json.tmp")
+
+    try:
+        logger.info(f"s3_service: downloading from S3 — key={s3_key}")
+        response = _get_s3_client().get_object(
+            Bucket=settings.AWS_S3_BUCKET,
+            Key=s3_key,
+        )
+        body = response["Body"].read()
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(temp_path, "wb") as file:
+            file.write(body)
+        os.replace(temp_path, local_path)
+
+        logger.info(f"s3_service: download completed successfully — {local_path}")
+        return True
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("404", "NoSuchKey", "NotFound"):
+            logger.warning(f"s3_service: object not found in S3 — key={s3_key}")
+        else:
+            logger.error(f"s3_service: S3 download failed for key={s3_key} — {exc}")
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        return False
+    except (NoCredentialsError, OSError) as exc:
+        logger.error(f"s3_service: download failed for '{business_name}' — {exc}")
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        return False
+    except Exception as exc:
+        logger.error(
+            f"s3_service: unexpected download error for '{business_name}' — {exc}"
+        )
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        return False
+
+
+def upload_scraped_result_to_s3(
+    business_name: str,
+    local_file_path: Path | None = None,
+) -> bool:
+    local_path = local_file_path or get_scraped_result_path(business_name)
+    s3_key = get_s3_key(business_name)
+
+    if not local_path.exists():
+        logger.error(f"s3_service: cannot upload, local file missing — {local_path}")
+        return False
+
+    try:
+        logger.info(f"s3_service: uploading business data to S3 — key={s3_key}")
+        with open(local_path, "rb") as file:
+            _get_s3_client().put_object(
+                Bucket=settings.AWS_S3_BUCKET,
+                Key=s3_key,
+                Body=file,
+                ContentType="application/json",
+            )
+        logger.info(
+            f"s3_service: upload completed successfully — "
+            f"bucket={settings.AWS_S3_BUCKET}, key={s3_key}"
+        )
+        return True
+    except ClientError as exc:
+        logger.error(f"s3_service: S3 upload failed for key={s3_key} — {exc}")
+        return False
+    except NoCredentialsError as exc:
+        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
+        return False
+    except OSError as exc:
+        logger.error(f"s3_service: failed to read local file for upload — {exc}")
+        return False
+    except Exception as exc:
+        logger.error(f"s3_service: unexpected upload error for '{business_name}' — {exc}")
+        return False
+
+
+def ensure_scraped_result_available(business_name: str) -> Path:
+    """
+    Return local path to scraped_result.json.
+    Uses local scraping_results first; downloads from S3 into the same path if missing.
+    """
+    business_name = business_name.strip()
+    local_path = get_scraped_result_path(business_name)
+
+    if local_path.exists():
+        logger.info(f"s3_service: using local scraped data — {local_path}")
+        return local_path
+
+    logger.info(
+        f"s3_service: business not found locally, checking S3 — business='{business_name}'"
+    )
+
+    if not business_exists_in_s3(business_name):
+        raise FileNotFoundError(f"No scraped data found for '{business_name}'")
+
+    if not download_scraped_result_from_s3(business_name, local_path):
+        raise FileNotFoundError(
+            f"Failed to download scraped data for '{business_name}' from S3"
+        )
+
+    return local_path
+
+
+def load_scraped_result_data(business_name: str) -> dict:
+    """
+    Load scraped_result.json for a business.
+    Checks local scraping_results first; downloads from S3 into the same path if missing.
+    """
+    local_path = ensure_scraped_result_available(business_name)
+    with open(local_path, "r", encoding="utf-8") as file:
+        return json.load(file)

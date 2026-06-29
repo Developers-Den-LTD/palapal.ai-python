@@ -6,7 +6,8 @@ from bs4 import BeautifulSoup
 
 from core.config import settings
 from services.logger_services import logger
-from utils.scraped_result_paths import get_scraped_result_path, slugify_folder_name
+from services.s3_service import load_scraped_result_data
+from utils.scraped_result_paths import slugify_folder_name
 
 PAGESPEED_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 STRATEGIES = ["mobile", "desktop"]
@@ -414,14 +415,14 @@ def check_nap_consistency(business_name: str) -> dict:
 
     business_name = business_name.strip()
     folder_slug = slugify_folder_name(business_name)
-    scraped_result_path = get_scraped_result_path(business_name)
 
     logger.info(
         f"technical_foundation: business_name='{business_name}', folder_slug='{folder_slug}'"
     )
-    logger.info(f"technical_foundation: looking for scraped data at {scraped_result_path}")
 
-    if not scraped_result_path.exists():
+    try:
+        scraped_data = load_scraped_result_data(business_name)
+    except FileNotFoundError:
         message = (
             f"No scraped result is present against this business name: '{business_name}'."
         )
@@ -443,9 +444,6 @@ def check_nap_consistency(business_name: str) -> dict:
             f"\nNAP Consistency Score: 0/{MAX_NAP_CONSISTENCY_SCORE}\n  {message}\n"
         )
         return result
-
-    with open(scraped_result_path, encoding="utf-8") as f:
-        scraped_data = json.load(f)
 
     platform_nap = {
         platform: _extract_platform_nap(scraped_data, platform)
