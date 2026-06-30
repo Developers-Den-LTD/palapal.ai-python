@@ -1,9 +1,5 @@
-import json
-from pathlib import Path
-
 from services.logger_services import logger
-
-SCRAPED_RESULT_PATH = Path(__file__).resolve().parent.parent / "scraped_result.json"
+from services.s3_service import load_scraped_result_data
 
 PLATFORMS = ("google_maps", "yelp", "tripadvisor")
 
@@ -23,33 +19,42 @@ def _extract_pending_review(review: dict) -> dict:
     }
 
 
-def get_pending_responses() -> dict:
-    logger.info("pending_responses: loading pending reviews from scraped_result.json")
+def _empty_error_result(message: str) -> dict:
+    return {
+        "status": "error",
+        "message": message,
+        "business": None,
+        "scraped_at": None,
+        "summary": {
+            "total_pending": 0,
+            "google_maps": 0,
+            "yelp": 0,
+            "tripadvisor": 0,
+        },
+        "pending_responses": {
+            "google_maps": [],
+            "yelp": [],
+            "tripadvisor": [],
+        },
+    }
 
-    if not SCRAPED_RESULT_PATH.exists():
+
+def get_pending_responses(business_name: str) -> dict:
+    business_name = business_name.strip()
+    logger.info(
+        f"pending_responses: loading pending reviews for business='{business_name}'"
+    )
+
+    try:
+        scraped_data = load_scraped_result_data(business_name)
+    except FileNotFoundError:
         logger.warning(
-            f"pending_responses: scraped_result.json not found at {SCRAPED_RESULT_PATH}"
+            f"pending_responses: scraped_result.json not found locally or in S3 "
+            f"for '{business_name}'"
         )
-        return {
-            "status": "error",
-            "message": "No scraped_result.json found. Run scrape API first.",
-            "business": None,
-            "scraped_at": None,
-            "summary": {
-                "total_pending": 0,
-                "google_maps": 0,
-                "yelp": 0,
-                "tripadvisor": 0,
-            },
-            "pending_responses": {
-                "google_maps": [],
-                "yelp": [],
-                "tripadvisor": [],
-            },
-        }
-
-    with open(SCRAPED_RESULT_PATH, "r", encoding="utf-8") as file:
-        scraped_data = json.load(file)
+        return _empty_error_result(
+            f"No scraped data found for '{business_name}'. Run scrape API first."
+        )
 
     pending_by_platform: dict[str, list[dict]] = {
         platform: [] for platform in PLATFORMS

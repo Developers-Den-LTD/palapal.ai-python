@@ -37,10 +37,9 @@ file_handler = RotatingFileHandler(
 file_handler.setLevel(logging.DEBUG)  # DEBUG level to file (captures everything)
 file_handler.setFormatter(formatter)
 
-# Add both handlers to logger
-# Messages will go to both console and file
-#logger.addHandler(console_handler)
-logger.addHandler(file_handler)
+# Add file handler only once (avoids duplicate lines if module is imported again)
+if not logger.handlers:
+    logger.addHandler(file_handler)
 
 # Prevent duplicate logs
 # Without this, logs might propagate to parent loggers and appear multiple times

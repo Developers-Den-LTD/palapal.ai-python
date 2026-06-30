@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from schema.pending_responses_schema import PendingResponsesRequest
 from services.logger_services import logger
 from services.pending_responses_services import get_pending_responses
 from utils.auth_utils import verify_secret_key
@@ -10,15 +11,18 @@ router = APIRouter(
 )
 
 
-@router.get(
+@router.post(
     "/pending-responses",
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(verify_secret_key)],
 )
-def pending_responses():
-    logger.info("pending_responses route: GET /api/pending-responses — request received")
+def pending_responses(payload: PendingResponsesRequest):
+    logger.info(
+        "pending_responses route: POST /api/pending-responses — "
+        f"business='{payload.business_name}'"
+    )
     try:
-        result = get_pending_responses()
+        result = get_pending_responses(payload.business_name)
         if result["status"] == "success":
             logger.info(
                 "pending_responses route: request completed successfully — "

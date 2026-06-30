@@ -3,7 +3,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from utils.auth_utils import verify_secret_key
-from services.logger_service import logger
+from services.logger_services import logger
 
 router = APIRouter(
     prefix="/logs",
