@@ -15,6 +15,10 @@ def slugify_folder_name(name: str) -> str:
     return name or "unknown_business"
 
 
-def get_scraped_result_path(business_name: str) -> Path:
+def get_scraped_result_folder(business_name: str) -> Path:
     folder_slug = slugify_folder_name(business_name)
-    return RESULTS_BASE_PATH / folder_slug / "scraped_result.json"
+    return RESULTS_BASE_PATH / folder_slug
+
+
+def get_scraped_result_path(business_name: str) -> Path:
+    return get_scraped_result_folder(business_name) / "scraped_result.json"

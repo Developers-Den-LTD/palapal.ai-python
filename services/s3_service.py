@@ -165,6 +165,51 @@ def ensure_scraped_result_available(business_name: str) -> Path:
     return local_path
 
 
+def delete_scraped_result_from_s3(business_name: str) -> dict:
+    """
+    Delete scraped_result.json from S3 for a business.
+    Returns dict with keys: existed, deleted, error.
+    """
+    business_name = business_name.strip()
+    s3_key = get_s3_key(business_name)
+    result = {"existed": False, "deleted": False, "error": None, "s3_key": s3_key}
+
+    if not business_exists_in_s3(business_name):
+        logger.info(
+            f"s3_service: nothing to delete in S3 for business='{business_name}' — key={s3_key}"
+        )
+        return result
+
+    result["existed"] = True
+    try:
+        logger.info(f"s3_service: deleting from S3 — key={s3_key}")
+        _get_s3_client().delete_object(
+            Bucket=settings.AWS_S3_BUCKET,
+            Key=s3_key,
+        )
+        result["deleted"] = True
+        logger.info(
+            f"s3_service: deleted successfully — "
+            f"bucket={settings.AWS_S3_BUCKET}, key={s3_key}"
+        )
+        return result
+    except ClientError as exc:
+        error_message = f"S3 delete failed for key={s3_key} — {exc}"
+        logger.error(f"s3_service: {error_message}")
+        result["error"] = error_message
+        return result
+    except NoCredentialsError as exc:
+        error_message = f"invalid or missing AWS credentials — {exc}"
+        logger.error(f"s3_service: {error_message}")
+        result["error"] = error_message
+        return result
+    except Exception as exc:
+        error_message = f"unexpected S3 delete error for '{business_name}' — {exc}"
+        logger.error(f"s3_service: {error_message}")
+        result["error"] = error_message
+        return result
+
+
 def load_scraped_result_data(business_name: str) -> dict:
     """
     Load scraped_result.json for a business.

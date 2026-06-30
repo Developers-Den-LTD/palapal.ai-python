@@ -3,14 +3,23 @@ from pathlib import Path
 import json
 import os
 import re
+import shutil
 
 from apify_client import ApifyClient
 
 from core.config import settings
 from schema.scrapper import ScrapeRequest
 from services.logger_services import logger
-from services.s3_service import upload_scraped_result_to_s3
-from utils.scraped_result_paths import get_scraped_result_path
+from services.s3_service import (
+    delete_scraped_result_from_s3,
+    get_s3_key,
+    upload_scraped_result_to_s3,
+)
+from utils.scraped_result_paths import (
+    get_scraped_result_folder,
+    get_scraped_result_path,
+    slugify_folder_name,
+)
 
 APIFY_API_TOKEN = settings.Apify_API
 client = ApifyClient(APIFY_API_TOKEN)
@@ -47,6 +56,97 @@ def save_scraped_result(data: dict, business_name: str) -> None:
             temp_path.unlink(missing_ok=True)
         logger.exception(f"save_scraped_result: failed to write result for {business_name} — {e}")
         raise
+
+
+def _delete_scraped_result_local(business_name: str) -> dict:
+    business_name = business_name.strip()
+    folder_path = get_scraped_result_folder(business_name)
+    result = {
+        "existed": False,
+        "deleted": False,
+        "error": None,
+        "local_path": str(folder_path),
+    }
+
+    if not folder_path.exists():
+        logger.info(
+            f"delete_scraped_data: no local folder for business='{business_name}' — {folder_path}"
+        )
+        return result
+
+    result["existed"] = True
+    try:
+        shutil.rmtree(folder_path)
+        result["deleted"] = True
+        logger.info(
+            f"delete_scraped_data: deleted local folder for business='{business_name}' — {folder_path}"
+        )
+        return result
+    except OSError as exc:
+        error_message = f"failed to delete local folder '{folder_path}' — {exc}"
+        logger.error(f"delete_scraped_data: {error_message}")
+        result["error"] = error_message
+        return result
+
+
+def delete_scraped_data(business_name: str) -> dict:
+    business_name = business_name.strip()
+    folder_slug = slugify_folder_name(business_name)
+    s3_key = get_s3_key(business_name)
+
+    logger.info(f"delete_scraped_data: request received business='{business_name}'")
+
+    local_result = _delete_scraped_result_local(business_name)
+    s3_result = delete_scraped_result_from_s3(business_name)
+
+    base_response = {
+        "business_name": business_name,
+        "folder_slug": folder_slug,
+        "local_path": local_result["local_path"],
+        "s3_key": s3_key,
+        "deleted": {
+            "local": local_result["deleted"],
+            "s3": s3_result["deleted"],
+        },
+        "found": {
+            "local": local_result["existed"],
+            "s3": s3_result["existed"],
+        },
+    }
+
+    errors = [
+        error
+        for error in (local_result.get("error"), s3_result.get("error"))
+        if error
+    ]
+    if errors:
+        return {
+            **base_response,
+            "status": "error",
+            "message": "; ".join(errors),
+        }
+
+    if not local_result["existed"] and not s3_result["existed"]:
+        return {
+            **base_response,
+            "status": "error",
+            "message": f"No scraped data found for '{business_name}'.",
+        }
+
+    deleted_locations = []
+    if local_result["deleted"]:
+        deleted_locations.append("local storage")
+    if s3_result["deleted"]:
+        deleted_locations.append("AWS S3")
+
+    return {
+        **base_response,
+        "status": "success",
+        "message": (
+            f"Scraped data deleted for '{business_name}' from "
+            f"{', '.join(deleted_locations)}."
+        ),
+    }
 
 
 def get_dataset_id(run):
