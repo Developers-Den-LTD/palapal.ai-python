@@ -380,7 +380,7 @@ def _scrape_yelp(payload: ScrapeRequest, full_search_query: str):
                 "reviewsUrl": [payload.yelp_url],
                 "categorySearch": False,
                 "includeAds": False,
-                "numberOfReviews": 10,
+                "numberOfReviews": 40,
                 "reviewsSorting": "Newest_first",
                 "scrapeAll": False,
                 "scrapeAllReviews": False,
