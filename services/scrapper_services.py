@@ -319,7 +319,7 @@ def _scrape_google_maps(full_search_query: str):
         google_run = client.actor("compass/crawler-google-places").call(run_input={
             "searchStringsArray": [full_search_query],
             "maxCrawledPlacesPerSearch": 1,
-            "maxReviews": 50,
+            "maxReviews":10,
             "language": "en",
             "reviewsSort": "newest",
             "personalDataDeviceType": "desktop"
@@ -380,7 +380,7 @@ def _scrape_yelp(payload: ScrapeRequest, full_search_query: str):
                 "reviewsUrl": [payload.yelp_url],
                 "categorySearch": False,
                 "includeAds": False,
-                "numberOfReviews": 50,
+                "numberOfReviews": 10,
                 "reviewsSorting": "Newest_first",
                 "scrapeAll": False,
                 "scrapeAllReviews": False,
@@ -490,7 +490,7 @@ def _scrape_tripadvisor(tripadvisor_url: str | None):
 
         ta_run = client.actor("maxcopell/tripadvisor-reviews").call(run_input={
             "startUrls": [{"url": tripadvisor_url}],
-            "maxReviews": 50,
+            "maxReviews": 10,
         })
         for item in client.dataset(get_dataset_id(ta_run)).list_items().items:
             user_obj = item.get("user") or {}
