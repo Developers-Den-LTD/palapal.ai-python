@@ -529,6 +529,20 @@ def _scrape_tripadvisor(tripadvisor_url: str | None):
     }
 
 
+def _is_empty_url(url: str | None) -> bool:
+    return not url or not str(url).strip()
+
+
+def _skipped_platform_result(platform: str) -> dict:
+    return {
+        "status": f"⚠️ Skipped — {platform} link is empty",
+        "business_name": "N/A",
+        "business_address": "N/A",
+        "business_phone": "N/A",
+        "reviews": [],
+    }
+
+
 def scrape_reviews(payload: ScrapeRequest) -> dict:
     logger.info(
         f"scrape_reviews: request received business='{payload.business_name}', "
@@ -540,8 +554,18 @@ def scrape_reviews(payload: ScrapeRequest) -> dict:
     logger.info(f"scrape_reviews: search query='{full_search_query}'")
 
     google = _scrape_google_maps(full_search_query)
-    yelp = _scrape_yelp(payload, full_search_query)
-    tripadvisor = _scrape_tripadvisor(payload.tripadvisor_url)
+
+    if _is_empty_url(payload.yelp_url):
+        logger.info("scrape_reviews: Yelp skipped — yelp_url is empty")
+        yelp = _skipped_platform_result("Yelp")
+    else:
+        yelp = _scrape_yelp(payload, full_search_query)
+
+    if _is_empty_url(payload.tripadvisor_url):
+        logger.info("scrape_reviews: TripAdvisor skipped — tripadvisor_url is empty")
+        tripadvisor = _skipped_platform_result("TripAdvisor")
+    else:
+        tripadvisor = _scrape_tripadvisor(payload.tripadvisor_url)
 
     result = {
         "business": full_search_query,
