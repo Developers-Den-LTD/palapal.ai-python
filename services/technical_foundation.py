@@ -1,6 +1,7 @@
 import httpx
 import json
 import re
+import time
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
@@ -35,6 +36,46 @@ def _log_section(title: str) -> None:
     logger.info(f"technical_foundation: {'=' * 60}")
     logger.info(f"technical_foundation: {title}")
     logger.info(f"technical_foundation: {'=' * 60}")
+
+
+def _get_pagespeed_with_retries(
+    client: httpx.Client,
+    *,
+    website_url: str,
+    strategy: str,
+    max_attempts: int = 5,
+    base_delay_seconds: float = 1.0,
+) -> httpx.Response:
+    """
+    Retry PageSpeed calls on HTTP 500 (Lighthouse flakiness).
+    Stops immediately on first non-500 response.
+    """
+    last_response: httpx.Response | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        response = client.get(
+            PAGESPEED_ENDPOINT,
+            params={
+                "url": website_url,
+                "strategy": strategy,
+                "key": settings.Pagespeed_API,
+            },
+        )
+        last_response = response
+
+        if response.status_code != 500:
+            return response
+
+        if attempt < max_attempts:
+            delay = base_delay_seconds * attempt
+            logger.warning(
+                "technical_foundation: PageSpeed returned 500 — "
+                f"retrying attempt={attempt}/{max_attempts}, "
+                f"strategy={strategy}, delay_s={delay}"
+            )
+            time.sleep(delay)
+
+    return last_response
 
 
 def _parse_lcp_seconds(lcp_value: str | None) -> float | None:
@@ -564,19 +605,19 @@ def check_technical_foundation(website_url: str, business_name: str) -> dict:
     with httpx.Client(timeout=120.0) as client:
         for index, strategy in enumerate(STRATEGIES, start=1):
             _log_section(f"Step {index} — PageSpeed API call ({strategy})")
-            params = {
-                "url": website_url,
-                "strategy": strategy,
-                "key": settings.Pagespeed_API,
-            }
-
             logger.info(
                 f"technical_foundation: calling PageSpeed API — "
                 f"endpoint={PAGESPEED_ENDPOINT}, strategy={strategy}"
             )
             print(f"Calling PageSpeed API for: {strategy}")
 
-            response = client.get(PAGESPEED_ENDPOINT, params=params)
+            response = _get_pagespeed_with_retries(
+                client,
+                website_url=website_url,
+                strategy=strategy,
+                max_attempts=5,
+                base_delay_seconds=1.0,
+            )
 
             logger.info(
                 f"technical_foundation: API response — "
