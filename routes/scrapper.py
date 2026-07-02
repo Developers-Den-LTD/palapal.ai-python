@@ -21,8 +21,8 @@ async def _run_scrape_reviews_and_notify(payload: ScrapeRequest) -> None:
         webhook_url = str(payload.webhook_url)
         result = run_scrape_reviews(payload)
 
-        print("sending result to webhook:", result)  # Print the last 100 characters of the result for debugging
-        logger.info(f"\n\nscrape_reviews background: sending result to webhook: {result}")
+        print("sending result to webhook:", result[:100])  # First 100 characters
+        logger.info(f"scrape_reviews background: sending result to webhook: {result[:100]}")
         await post_to_webhook(webhook_url, result)
         
     except Exception as e:
