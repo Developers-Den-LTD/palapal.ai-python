@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import time
 
 from apify_client import ApifyClient
 
@@ -23,6 +24,33 @@ from utils.scraped_result_paths import (
 
 APIFY_API_TOKEN = settings.Apify_API
 client = ApifyClient(APIFY_API_TOKEN)
+
+ACTOR_MAX_ATTEMPTS = 3
+ACTOR_RETRY_DELAY_SECONDS = 2
+
+
+def _run_actor_with_retry(actor_id: str, run_input: dict):
+    last_error = None
+    for attempt in range(1, ACTOR_MAX_ATTEMPTS + 1):
+        try:
+            logger.info(
+                f"run_actor_with_retry: actor='{actor_id}' "
+                f"attempt {attempt}/{ACTOR_MAX_ATTEMPTS}"
+            )
+            return client.actor(actor_id).call(run_input=run_input)
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                f"run_actor_with_retry: actor='{actor_id}' "
+                f"attempt {attempt} failed — {e}"
+            )
+            if attempt < ACTOR_MAX_ATTEMPTS:
+                time.sleep(ACTOR_RETRY_DELAY_SECONDS)
+    logger.exception(
+        f"run_actor_with_retry: actor='{actor_id}' failed after "
+        f"{ACTOR_MAX_ATTEMPTS} attempts"
+    )
+    raise last_error
 
 
 def save_scraped_result(data: dict, business_name: str) -> None:
@@ -316,7 +344,7 @@ def _scrape_google_maps(full_search_query: str):
 
     try:
         logger.info("scrape_reviews: starting Google Maps scrape")
-        google_run = client.actor("compass/crawler-google-places").call(run_input={
+        google_run = _run_actor_with_retry("compass/crawler-google-places", {
             "searchStringsArray": [full_search_query],
             "maxCrawledPlacesPerSearch": 1,
             "maxReviews":10,
@@ -375,7 +403,7 @@ def _scrape_yelp(payload: ScrapeRequest, full_search_query: str):
         logger.info("scrape_reviews: starting Yelp scrape")
         if payload.yelp_url:
             logger.info(f"scrape_reviews: Yelp direct URL scrape url='{payload.yelp_url}'")
-            yelp_run = client.actor("api-ninja/yelp-ultimate-scraper").call(run_input={
+            yelp_run = _run_actor_with_retry("api-ninja/yelp-ultimate-scraper", {
                 "businessUrl": [payload.yelp_url],
                 "reviewsUrl": [payload.yelp_url],
                 "categorySearch": False,
@@ -404,7 +432,7 @@ def _scrape_yelp(payload: ScrapeRequest, full_search_query: str):
 
         if not yelp_reviews:
             logger.info("scrape_reviews: Yelp falling back to search string scrape")
-            run = client.actor("triangle/yelp-scraper").call(run_input={
+            run = _run_actor_with_retry("triangle/yelp-scraper", {
                 "searchTerms": full_search_query,
                 "includeReviews": True,
                 "maxResults": 1,
@@ -453,7 +481,7 @@ def _scrape_tripadvisor(tripadvisor_url: str | None):
     try:
         # --- NAP: crawlerbros/tripadvisor-scraper ---
         logger.info(f"scrape_reviews: TripAdvisor NAP scrape (crawlerbros) url='{clean_url}'")
-        detail_run = client.actor("crawlerbros/tripadvisor-scraper").call(run_input={
+        detail_run = _run_actor_with_retry("crawlerbros/tripadvisor-scraper", {
             "startUrls": [clean_url],
             "maxItems": 1,
             "placeType": "all",
@@ -488,7 +516,7 @@ def _scrape_tripadvisor(tripadvisor_url: str | None):
             )
 
 
-        ta_run = client.actor("maxcopell/tripadvisor-reviews").call(run_input={
+        ta_run = _run_actor_with_retry("maxcopell/tripadvisor-reviews", {
             "startUrls": [{"url": tripadvisor_url}],
             "maxReviews": 10,
         })

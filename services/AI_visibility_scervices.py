@@ -56,19 +56,45 @@ def _generate_questions(business_type: str, business_loc: str, business_name: st
                 {
                     "role": "system",
                     "content": (
-                        "You are a helpful assistant. Return only a numbered list of questions, nothing else."
+                        "You are a local search query expert. Your job is to generate "
+                        "realistic, high-intent discovery questions that a real person "
+                        "would type when looking for the best options in a category and "
+                        "location. Return only a numbered list of exactly 10 questions. "
+                        "No introductions, explanations, or extra text."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": f"""Generate exactly 10 search questions a person might type when looking for a {business_type} in {business_loc}.
+                    "content": f"""Generate exactly 10 search questions a real person would type when looking for a {business_type} in {business_loc}.
 
-Rules:
-- Questions should be natural, varied search queries
-- Focus on {business_type} discovery in {business_loc}
-- Examples of style: "best {business_type} in {business_loc}", "top rated {business_type} in {business_loc}", "where to find a good {business_type} in {business_loc}"
-- Do NOT mention "{business_name}" in any question
-- Return only the numbered list, no extra text""",
+CONTEXT:
+These questions will be used to test how often AI assistants recommend top businesses in this category and location. Each question should reflect a mainstream, quality-focused search — the kind someone asks when they want the best or most trusted options, not a narrow filter or budget hunt.
+
+GOOD QUESTION TYPES (use a mix of these):
+- Best / top / highest-rated discovery: "best {business_type} in {business_loc}", "top rated {business_type} in {business_loc}"
+- Recommendation intent: "which {business_type} do you recommend in {business_loc}", "what are the best {business_type} options in {business_loc}"
+- Trust / reputation: "most popular {business_type} in {business_loc}", "highest rated {business_type} near {business_loc}"
+- Decision-making: "where should I go for a good {business_type} in {business_loc}", "which {business_type} is worth visiting in {business_loc}"
+- Comparison / roundup style: "what are the top {business_type} places in {business_loc}", "best places for {business_type} in {business_loc}"
+- Conversational / natural user queries (include exactly 1 or 2 of these): casual, full-sentence questions like someone chatting with an AI assistant — e.g. "I'm planning a trip to {business_loc}. Which {business_type} should I go to?", "I'm visiting {business_loc} soon — where's a good {business_type}?", "Can you suggest a {business_type} in {business_loc}?"
+
+STRICT RULES:
+1. Every question MUST be about finding a {business_type} in or near {business_loc}
+2. Exactly 1 or 2 questions must be conversational, natural full-sentence queries (like a normal person talking to ChatGPT) — not keyword-style searches
+3. The remaining 8 or 9 questions should be varied search-style discovery queries
+4. Questions must sound natural — like real Google or ChatGPT searches, not marketing copy
+5. Focus on quality, reputation, and discovery — NOT price, budget, or deals
+6. Vary the wording across all 10 questions; do not repeat the same template with tiny changes
+7. Do NOT mention "{business_name}" or any specific business name
+8. Do NOT use question words or angles that narrow the search to a niche attribute
+
+NEVER GENERATE QUESTIONS LIKE THESE (examples of what to avoid):
+- Price/budget: "cheap {business_type} in {business_loc}", "affordable {business_type} in {business_loc}", "budget-friendly {business_type} in {business_loc}", "{business_type} with good deals in {business_loc}"
+- Niche attributes: "pet friendly {business_type} in {business_loc}", "vegan {business_type} in {business_loc}", "24-hour {business_type} in {business_loc}", "kid-friendly {business_type} in {business_loc}", "{business_type} with free parking in {business_loc}"
+- Overly specific filters that exclude most businesses in the category
+
+OUTPUT FORMAT:
+Return only a numbered list from 1 to 10. One question per line. No other text.""",
                 },
             ],
         )
@@ -80,7 +106,6 @@ Rules:
     logger.info(f"ai_visibility: questions generated successfully ({len(questions_text)} chars)")
     _log_block("Generated questions", questions_text)
     return questions_text
-
 
 def _fetch_answers(business_type: str, business_loc: str, questions_text: str) -> str:
     _log_section("Step 2 — Fetching answers from Perplexity")
