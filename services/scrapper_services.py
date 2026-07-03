@@ -16,6 +16,7 @@ from services.s3_service import (
     get_s3_key,
     upload_scraped_result_to_s3,
 )
+from utils.platform_urls import normalize_tripadvisor_url, normalize_yelp_url
 from utils.scraped_result_paths import (
     get_scraped_result_folder,
     get_scraped_result_path,
@@ -392,7 +393,7 @@ def _scrape_google_maps(full_search_query: str):
     }
 
 
-def _scrape_yelp(payload: ScrapeRequest, full_search_query: str):
+def _scrape_yelp(yelp_url: str, full_search_query: str):
     yelp_reviews = []
     yelp_status = "❌ Failed"
     yelp_business_title = "N/A"
@@ -401,11 +402,11 @@ def _scrape_yelp(payload: ScrapeRequest, full_search_query: str):
 
     try:
         logger.info("scrape_reviews: starting Yelp scrape")
-        if payload.yelp_url:
-            logger.info(f"scrape_reviews: Yelp direct URL scrape url='{payload.yelp_url}'")
+        if yelp_url:
+            logger.info(f"scrape_reviews: Yelp direct URL scrape url='{yelp_url}'")
             yelp_run = _run_actor_with_retry("api-ninja/yelp-ultimate-scraper", {
-                "businessUrl": [payload.yelp_url],
-                "reviewsUrl": [payload.yelp_url],
+                "businessUrl": [yelp_url],
+                "reviewsUrl": [yelp_url],
                 "categorySearch": False,
                 "includeAds": False,
                 "numberOfReviews": 40,
@@ -431,20 +432,49 @@ def _scrape_yelp(payload: ScrapeRequest, full_search_query: str):
                 logger.warning("scrape_reviews: Yelp direct URL scrape returned no items")
 
         if not yelp_reviews:
-            logger.info("scrape_reviews: Yelp falling back to search string scrape")
-            run = _run_actor_with_retry("triangle/yelp-scraper", {
-                "searchTerms": full_search_query,
-                "includeReviews": True,
-                "maxResults": 1,
-                "proxyConfiguration": {
-                    "useApifyProxy": True,
-                    "apifyProxyGroups": ["RESIDENTIAL"]
-                }
+            logger.info("scrape_reviews: Yelp falling Again starting")
+            # run = _run_actor_with_retry("tri_angle/yelp-scraper", {
+            #     "searchTerms": full_search_query,
+            #     "includeReviews": True,
+            #     "maxResults": 1,
+            #     "proxyConfiguration": {
+            #         "useApifyProxy": True,
+            #         "apifyProxyGroups": ["RESIDENTIAL"]
+            #     }
+            # })
+            # items = client.dataset(get_dataset_id(run)).list_items().items
+            # yelp_reviews = extract_reviews(items)
+            # if yelp_reviews:
+            #     yelp_status = f"✅ Success — {len(yelp_reviews)} reviews (via search string)"
+            
+            
+            yelp_run = _run_actor_with_retry("api-ninja/yelp-ultimate-scraper", {
+                "businessUrl": [yelp_url],
+                "reviewsUrl": [yelp_url],
+                "categorySearch": False,
+                "includeAds": False,
+                "numberOfReviews": 40,
+                "reviewsSorting": "Newest_first",
+                "scrapeAll": False,
+                "scrapeAllReviews": False,
+                "details": "basic",
+                "numberOfResults": 100,
+                "ratingReviews": "All_ratings",
+                "dishType": "menu",
             })
-            items = client.dataset(get_dataset_id(run)).list_items().items
-            yelp_reviews = extract_reviews(items)
-            if yelp_reviews:
-                yelp_status = f"✅ Success — {len(yelp_reviews)} reviews (via search string)"
+            items = client.dataset(get_dataset_id(yelp_run)).list_items().items
+
+            if items:
+                nap = extract_nap(items)
+                yelp_business_title = nap["name"]
+                yelp_business_address = nap["address"]
+                yelp_business_phone = nap["phone"]
+                yelp_reviews = extract_yelp_reviews(items)
+                yelp_status = f"✅ Success — {len(yelp_reviews)} reviews"
+            else:
+                yelp_status = "⚠️ No Yelp data returned"
+                logger.warning("scrape_reviews: Yelp direct URL scrape returned no items")
+
         logger.info(f"scrape_reviews: Yelp {yelp_status}")
     except Exception as e:
         yelp_status = f"❌ Failed: {str(e)}"
@@ -581,19 +611,37 @@ def scrape_reviews(payload: ScrapeRequest) -> dict:
     full_search_query = f"{payload.business_name} {payload.location} {payload.exact_place}"
     logger.info(f"scrape_reviews: search query='{full_search_query}'")
 
+    yelp_url = normalize_yelp_url(payload.yelp_url)
+    if payload.yelp_url and yelp_url and yelp_url != payload.yelp_url.strip():
+        logger.info(
+            f"scrape_reviews: normalized Yelp URL "
+            f"'{payload.yelp_url}' -> '{yelp_url}'"
+        )
+
+    tripadvisor_url = normalize_tripadvisor_url(payload.tripadvisor_url)
+    if (
+        payload.tripadvisor_url
+        and tripadvisor_url
+        and tripadvisor_url != payload.tripadvisor_url.strip()
+    ):
+        logger.info(
+            f"scrape_reviews: normalized TripAdvisor URL "
+            f"'{payload.tripadvisor_url}' -> '{tripadvisor_url}'"
+        )
+
     google = _scrape_google_maps(full_search_query)
 
-    if _is_empty_url(payload.yelp_url):
+    if _is_empty_url(yelp_url):
         logger.info("scrape_reviews: Yelp skipped — yelp_url is empty")
         yelp = _skipped_platform_result("Yelp")
     else:
-        yelp = _scrape_yelp(payload, full_search_query)
+        yelp = _scrape_yelp(yelp_url, full_search_query)
 
-    if _is_empty_url(payload.tripadvisor_url):
+    if _is_empty_url(tripadvisor_url):
         logger.info("scrape_reviews: TripAdvisor skipped — tripadvisor_url is empty")
         tripadvisor = _skipped_platform_result("TripAdvisor")
     else:
-        tripadvisor = _scrape_tripadvisor(payload.tripadvisor_url)
+        tripadvisor = _scrape_tripadvisor(tripadvisor_url)
 
     result = {
         "business": full_search_query,

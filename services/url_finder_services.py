@@ -4,6 +4,7 @@ from ddgs import DDGS
 
 from schema.url_finder import BusinessSearchRequest
 from services.logger_services import logger
+from utils.platform_urls import normalize_tripadvisor_url, normalize_yelp_url
 
 _STOPWORDS = {"the", "and", "of", "a", "an", "by", "restaurant", "hotel", "cafe", "bar"}
 
@@ -26,10 +27,12 @@ def is_valid_yelp(url: str) -> bool:
 
 
 def is_valid_tripadvisor(url: str) -> bool:
-    return (
-        "tripadvisor.com/Restaurant_Review" in url
-        or "tripadvisor.com/Hotel_Review" in url
-        or "tripadvisor.com/Attraction_Review" in url
+    return bool(
+        re.search(
+            r"tripadvisor\.[a-z.]+/(Restaurant_Review|Hotel_Review|Attraction_Review)",
+            url,
+            flags=re.IGNORECASE,
+        )
     )
 
 
@@ -45,8 +48,11 @@ def _match_score(text: str, business_name: str) -> tuple[int, int]:
 
 
 def _normalize_yelp_url(url: str) -> str:
-    return url.replace("://m.yelp.com/", "://www.yelp.com/")
+    return normalize_yelp_url(url) or url
 
+
+def _normalize_tripadvisor_url(url: str) -> str:
+    return normalize_tripadvisor_url(url) or url
 
 def result_matches_business(*, url: str, business_name: str) -> bool:
     """Loose match: require "some" overlap, not a perfect URL-slug match."""
@@ -83,7 +89,7 @@ def _extract_platform_urls(
             yelp_candidate = _normalize_yelp_url(url)
 
         if need_tripadvisor and tripadvisor_candidate is None and is_valid_tripadvisor(url):
-            tripadvisor_candidate = url
+            tripadvisor_candidate = _normalize_tripadvisor_url(url)
 
         if not result_matches_business(url=match_text, business_name=business_name):
             continue
@@ -93,7 +99,7 @@ def _extract_platform_urls(
             logger.info(f"find_business_links: found Yelp URL={yelp_url}")
 
         if need_tripadvisor and tripadvisor_url is None and is_valid_tripadvisor(url):
-            tripadvisor_url = url
+            tripadvisor_url = _normalize_tripadvisor_url(url)
             logger.info(f"find_business_links: found TripAdvisor URL={tripadvisor_url}")
 
         if (not need_yelp or yelp_url) and (not need_tripadvisor or tripadvisor_url):
