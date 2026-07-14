@@ -8,10 +8,16 @@ from botocore.exceptions import ClientError, NoCredentialsError
 
 from core.config import settings
 from services.logger_services import logger
-from utils.scraped_result_paths import get_scraped_result_path, slugify_folder_name
+from utils.scraped_result_paths import (
+    get_ddi_score_result_path,
+    get_scraped_result_path,
+    slugify_folder_name,
+)
 
 S3_KEY_PREFIX = "scraping_results"
 SCRAPED_RESULT_FILENAME = "scraped_result.json"
+DDI_SCORE_KEY_PREFIX = "DDI_score"
+DDI_SCORE_RESULT_FILENAME = "Result.json"
 
 
 def _get_s3_client():
@@ -27,6 +33,49 @@ def _get_s3_client():
 def get_s3_key(business_name: str) -> str:
     folder_slug = slugify_folder_name(business_name)
     return f"{S3_KEY_PREFIX}/{folder_slug}/{SCRAPED_RESULT_FILENAME}"
+
+
+def get_ddi_score_s3_key(business_name: str) -> str:
+    folder_slug = slugify_folder_name(business_name)
+    return f"{DDI_SCORE_KEY_PREFIX}/{folder_slug}/{DDI_SCORE_RESULT_FILENAME}"
+
+
+def upload_json_to_s3(*, s3_key: str, data: dict) -> bool:
+    """
+    Upload a JSON payload to S3 at a given key.
+    Overwrites any existing object at the same key.
+    """
+    try:
+        body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        _get_s3_client().put_object(
+            Bucket=settings.AWS_S3_BUCKET,
+            Key=s3_key,
+            Body=body,
+            ContentType="application/json",
+        )
+        logger.info(
+            f"s3_service: JSON upload completed successfully — "
+            f"bucket={settings.AWS_S3_BUCKET}, key={s3_key}"
+        )
+        return True
+    except ClientError as exc:
+        logger.error(f"s3_service: JSON upload failed for key={s3_key} — {exc}")
+        return False
+    except NoCredentialsError as exc:
+        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
+        return False
+    except Exception as exc:
+        logger.error(f"s3_service: unexpected JSON upload error for key={s3_key} — {exc}")
+        return False
+
+
+def upload_ddi_score_result_to_s3(business_name: str, result: dict) -> bool:
+    """
+    Upload the DDI score result JSON to:
+      DDI_score/<business_slug>/Result.json
+    """
+    s3_key = get_ddi_score_s3_key(business_name)
+    return upload_json_to_s3(s3_key=s3_key, data=result)
 
 
 def business_exists_in_s3(business_name: str) -> bool:
@@ -218,3 +267,75 @@ def load_scraped_result_data(business_name: str) -> dict:
     local_path = ensure_scraped_result_available(business_name)
     with open(local_path, "r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def ddi_score_exists_in_s3(business_name: str) -> bool:
+    s3_key = get_ddi_score_s3_key(business_name)
+    try:
+        _get_s3_client().head_object(
+            Bucket=settings.AWS_S3_BUCKET,
+            Key=s3_key,
+        )
+        logger.info(f"s3_service: DDI score found in S3 — key={s3_key}")
+        return True
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("404", "NoSuchKey", "NotFound"):
+            logger.info(f"s3_service: DDI score not found in S3 — key={s3_key}")
+            return False
+        logger.error(f"s3_service: S3 head_object failed for key={s3_key} — {exc}")
+        return False
+    except NoCredentialsError as exc:
+        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
+        return False
+    except Exception as exc:
+        logger.error(
+            f"s3_service: unexpected error checking DDI score in S3 for key={s3_key} — {exc}"
+        )
+        return False
+
+
+def download_ddi_score_result_from_s3(
+    business_name: str,
+    local_path: Path | None = None,
+) -> bool:
+    local_path = local_path or get_ddi_score_result_path(business_name)
+    s3_key = get_ddi_score_s3_key(business_name)
+    temp_path = local_path.with_suffix(".json.tmp")
+
+    try:
+        logger.info(f"s3_service: downloading DDI score from S3 — key={s3_key}")
+        response = _get_s3_client().get_object(
+            Bucket=settings.AWS_S3_BUCKET,
+            Key=s3_key,
+        )
+        body = response["Body"].read()
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(temp_path, "wb") as file:
+            file.write(body)
+        os.replace(temp_path, local_path)
+
+        logger.info(f"s3_service: DDI score download completed — {local_path}")
+        return True
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("404", "NoSuchKey", "NotFound"):
+            logger.warning(f"s3_service: DDI score not found in S3 — key={s3_key}")
+        else:
+            logger.error(f"s3_service: DDI score download failed for key={s3_key} — {exc}")
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        return False
+    except (NoCredentialsError, OSError) as exc:
+        logger.error(f"s3_service: DDI score download failed for '{business_name}' — {exc}")
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        return False
+    except Exception as exc:
+        logger.error(
+            f"s3_service: unexpected DDI score download error for '{business_name}' — {exc}"
+        )
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        return False

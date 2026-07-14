@@ -3,6 +3,8 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 RESULTS_BASE_PATH = BASE_DIR / "scraping_results"
+DDI_SCORE_BASE_PATH = BASE_DIR / "DDI_score"
+DDI_SCORE_RESULT_FILENAME = "Result.json"
 
 
 def slugify_folder_name(name: str) -> str:
@@ -22,3 +24,12 @@ def get_scraped_result_folder(business_name: str) -> Path:
 
 def get_scraped_result_path(business_name: str) -> Path:
     return get_scraped_result_folder(business_name) / "scraped_result.json"
+
+
+def get_ddi_score_result_folder(business_name: str) -> Path:
+    folder_slug = slugify_folder_name(business_name)
+    return DDI_SCORE_BASE_PATH / folder_slug
+
+
+def get_ddi_score_result_path(business_name: str) -> Path:
+    return get_ddi_score_result_folder(business_name) / DDI_SCORE_RESULT_FILENAME

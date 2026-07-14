@@ -15,6 +15,8 @@ from services.technical_foundation import (
     check_technical_foundation,
 )
 from services.logger_services import logger
+from services.s3_service import upload_ddi_score_result_to_s3, get_ddi_score_s3_key
+from core.config import settings
 
 MAX_DDI_FINAL_SCORE = (
     MAX_DDI_AI_VISIBILITY_SCORE
@@ -157,5 +159,17 @@ async def calculate_ddi_score(payload: DDIScoreRequest) -> dict:
 
     if errors:
         response["errors"] = errors
+
+    s3_key = get_ddi_score_s3_key(payload.business_name)
+    if upload_ddi_score_result_to_s3(payload.business_name, response):
+        logger.info(
+            "ddi_score: stored result in S3 — "
+            f"bucket={settings.AWS_S3_BUCKET}, key={s3_key}"
+        )
+    else:
+        logger.error(
+            "ddi_score: failed to store result in S3 — "
+            f"business='{payload.business_name}', key={s3_key}"
+        )
 
     return response
