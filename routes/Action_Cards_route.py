@@ -19,21 +19,29 @@ router = APIRouter(
 def action_cards(payload: ActionCardsRequest):
     logger.info(
         "action_cards route: POST /api/action-cards — "
-        f"business='{payload.business_name}'"
+        f"business='{payload.business_name}', id='{payload.business_id}'"
     )
     try:
+        # 1. Fetch data using the business name as before
         result = get_action_cards_data(payload.business_name)
-        if result["status"] == "success":
+        
+        # 2. Append the incoming business_id to the output dictionary
+        if isinstance(result, dict):
+            result["business_id"] = payload.business_id
+        
+        if result.get("status") == "success":
             logger.info(
                 "action_cards route: request completed successfully — "
-                f"business='{result['business_name']}', source='{result['source']}'"
+                f"business='{result.get('business_name')}', id='{result.get('business_id')}', source='{result.get('source')}'"
             )
         else:
             logger.warning(
                 "action_cards route: request completed with error — "
                 f"message={result.get('message')}"
             )
+            
         return result
+        
     except Exception as e:
         logger.exception(f"action_cards route: request failed — {e}")
         raise HTTPException(

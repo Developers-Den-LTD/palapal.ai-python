@@ -7,3 +7,8 @@ class ActionCardsRequest(BaseModel):
         description="Business name used when calculating DDI score (matches DDI_score folder and S3 key)",
         min_length=1,
     )
+    business_id: str = Field(
+        ...,
+        description="Unique identifier for the business",
+        min_length=1,
+    )
