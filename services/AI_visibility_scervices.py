@@ -42,6 +42,20 @@ def _log_block(title: str, content: str) -> None:
         logger.info(f"ai_visibility: {line}" if line else "ai_visibility:")
 
 
+def _normalize_name_for_match(text: str) -> str:
+    text = text.lower().strip()
+    for ch in ("'", "'", "`", "´"):
+        text = text.replace(ch, "")
+    return text
+
+
+def _business_name_mentioned(business_name: str, text: str) -> bool:
+    normalized_name = _normalize_name_for_match(business_name)
+    if not normalized_name:
+        return False
+    return normalized_name in _normalize_name_for_match(text)
+
+
 def _generate_questions(business_type: str, business_loc: str, business_name: str) -> str:
     _log_section("Step 1 — Generating questions")
     logger.info(
@@ -169,7 +183,7 @@ def _calculate_citation_score(business_name: str, answers_text: str) -> dict:
             q_number += 1
             current_question = stripped
         if stripped.startswith("A") and ":" in stripped:
-            if business_name.lower() in stripped.lower():
+            if _business_name_mentioned(business_name, stripped):
                 mention_count += 1
                 mentioned_in.append(f"Q{q_number}: {current_question}")
                 logger.info(
@@ -221,7 +235,7 @@ def _calculate_exposure_fairness(business_name: str, answers_text: str) -> dict:
             q_num += 1
 
         if stripped.startswith("A") and ":" in stripped:
-            if business_name.lower() not in stripped.lower():
+            if not _business_name_mentioned(business_name, stripped):
                 continue
 
             answer_body = stripped.split(":", 1)[1].strip()
@@ -237,7 +251,7 @@ def _calculate_exposure_fairness(business_name: str, answers_text: str) -> dict:
 
             business_index = None
             for index, name in enumerate(names):
-                if business_name.lower() in name.lower():
+                if _business_name_mentioned(business_name, name):
                     business_index = index
                     break
 
@@ -444,8 +458,22 @@ def _calculate_sentiment_analysis(business_name: str) -> dict:
 
             if comment and str(comment).strip():
                 display_text = str(comment).strip()
-                prediction = model(display_text[:512])[0]
-                sentiment = _normalize_sentiment_label(prediction["label"])
+                try:
+                    prediction = model(
+                        display_text,
+                        truncation=True,
+                        max_length=512,
+                    )[0]
+                    sentiment = _normalize_sentiment_label(prediction["label"])
+                except Exception as e:
+                    logger.warning(
+                        f"ai_visibility: [{platform}] sentiment inference failed — {e}"
+                    )
+                    sentiment = "neutral"
+                    display_text = (
+                        f"{display_text[:100]}... "
+                        "[sentiment inference failed — counted as neutral]"
+                    )
             else:
                 rating_sentiment = _sentiment_from_rating(review.get("rating"))
                 if rating_sentiment is None:
