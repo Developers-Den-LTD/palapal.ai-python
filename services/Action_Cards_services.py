@@ -51,7 +51,7 @@ def _with_diy_tip(card: dict, diy_tip: str | None) -> dict:
 def _format_citation_card(data: dict | None) -> dict:
     data = data or {}
     mentions = data.get("mentions", 0)
-    total = data.get("total_questions", 10)
+    total = data.get("total_answers") or data.get("total_questions", 40)
     message = f"{mentions} AI mentioned out of {total}"
     percentage = data.get("percentage")
     if percentage is None:
@@ -201,11 +201,11 @@ def _build_action_cards(ddi_result: dict | None) -> dict:
             "Add `llms.txt` at your site root with a short business summary, key pages (menu/services), "
             "and contact/location info so AI systems can understand your site.",
         ),
-        "json_ld_schema": _with_diy_tip(
-            _format_json_ld_card(technical.get("json_ld")),
-            "Add JSON-LD schema (e.g., LocalBusiness/Restaurant) with name, address, phone, openingHours, "
-            "geo, sameAs links, and (if available) ratings/reviews.",
-        ),
+        # "json_ld_schema": _with_diy_tip(
+        #     _format_json_ld_card(technical.get("json_ld")),
+        #     "Add JSON-LD schema (e.g., LocalBusiness/Restaurant) with name, address, phone, openingHours, "
+        #     "geo, sameAs links, and (if available) ratings/reviews.",
+        # ),
         "nap_consistency": _with_diy_tip(
             _format_nap_consistency_card(technical.get("nap_consistency")),
             "Make Name/Address/Phone identical across Google, Yelp, TripAdvisor, Facebook, and your website. "

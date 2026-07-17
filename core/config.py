@@ -6,8 +6,16 @@ class Settings(BaseSettings):
     Apify_API: str = Field(min_length=1)
     Pagespeed_API: str = Field(min_length=1)
     Perplexity_API: str = Field(min_length=1)
+    OPENAI_API_KEY: str = Field(min_length=1)
+    Gemini_API_KEY: str = Field(min_length=1)
+    ANTHROPIC_API_KEY: str = Field(min_length=1)
+
+
+
 
     API_SECRET_KEY: str = Field(min_length=1)
+
+
 
 
     #AWS S3 Configuration

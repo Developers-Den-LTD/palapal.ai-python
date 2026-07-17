@@ -1,16 +1,20 @@
-import json
 import re
 
 from openai import OpenAI
 
 from core.config import settings
 from schema.AI_visibility_schema import AIVisibilityRequest
+from services.ai_provider_services import (
+    PROVIDER_MODELS,
+    fetch_answers_from_all_providers,
+)
 from services.logger_services import logger
 from services.model_loader import load_sentiment_model
 from services.s3_service import load_scraped_result_data
 from utils.scraped_result_paths import slugify_folder_name
 
 TOTAL_QUESTIONS = 10
+TOTAL_AI_ANSWERS = TOTAL_QUESTIONS * len(PROVIDER_MODELS)
 MAX_CITATION_SCORE = 15
 MAX_EXPOSURE_SCORE = 10
 MAX_SENTIMENT_SCORE = 15
@@ -24,7 +28,7 @@ POSITION_POINTS = {
 
 REVIEW_PLATFORMS = ("google_maps", "yelp", "tripadvisor")
 
-client = OpenAI(
+perplexity_client = OpenAI(
     api_key=settings.Perplexity_API,
     base_url="https://api.perplexity.ai",
 )
@@ -59,13 +63,14 @@ def _business_name_mentioned(business_name: str, text: str) -> bool:
 def _generate_questions(business_type: str, business_loc: str, business_name: str) -> str:
     _log_section("Step 1 — Generating questions")
     logger.info(
-        f"ai_visibility: calling Perplexity model='sonar' "
+        f"ai_visibility: calling Perplexity "
+        f"model='{PROVIDER_MODELS['perplexity']}' "
         f"type='{business_type}', loc='{business_loc}', business='{business_name}'"
     )
 
     try:
-        response = client.chat.completions.create(
-            model="sonar",
+        response = perplexity_client.chat.completions.create(
+            model=PROVIDER_MODELS["perplexity"],
             messages=[
                 {
                     "role": "system",
@@ -121,191 +126,177 @@ Return only a numbered list from 1 to 10. One question per line. No other text."
     _log_block("Generated questions", questions_text)
     return questions_text
 
-def _fetch_answers(business_type: str, business_loc: str, questions_text: str) -> str:
-    _log_section("Step 2 — Fetching answers from Perplexity")
-    logger.info(
-        f"ai_visibility: calling Perplexity model='sonar' "
-        f"type='{business_type}', loc='{business_loc}'"
-    )
+def _parse_questions(questions_text: str) -> list[str]:
+    questions = []
 
-    try:
-        response = client.chat.completions.create(
-            model="sonar",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful local search assistant. "
-                        "Answer each question with real, specific business names."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"""Answer each of the following questions about {business_type}s in {business_loc}.
-For each answer, you must list the top 9-10 specific business names.
+    for line in questions_text.splitlines():
+        question = re.sub(r"^\s*\d+\s*[.)-]\s*", "", line).strip()
+        if question:
+            questions.append(question)
 
-Format your response exactly like this:
-Q1: [question]
-A1: [answer with business names]
-
-Q2: [question]
-A2: [answer with business names]
-
-...and so on for all 10 questions.
-
-Here are the questions:
-{questions_text}""",
-                },
-            ],
+    if len(questions) != TOTAL_QUESTIONS:
+        raise ValueError(
+            f"Expected {TOTAL_QUESTIONS} generated questions, "
+            f"but received {len(questions)}"
         )
-    except Exception as e:
-        logger.exception(f"ai_visibility: answer fetch failed — {e}")
-        raise
 
-    answers_text = response.choices[0].message.content or ""
-    logger.info(f"ai_visibility: answers received successfully ({len(answers_text)} chars)")
-    _log_block("Perplexity answers", answers_text)
-    return answers_text
+    return questions
 
 
-def _calculate_citation_score(business_name: str, answers_text: str) -> dict:
+def _all_answer_records(
+    provider_results: dict[str, dict],
+    questions: list[str],
+) -> list[dict]:
+    records = []
+
+    for provider in PROVIDER_MODELS:
+        provider_result = provider_results.get(provider, {})
+        answers = {
+            item["question_number"]: item
+            for item in provider_result.get("answers", [])
+        }
+
+        for question_number, question in enumerate(questions, start=1):
+            answer = answers.get(question_number, {})
+            records.append({
+                "provider": provider,
+                "question_number": question_number,
+                "question": question,
+                "businesses": answer.get("businesses", []),
+            })
+
+    return records
+
+
+def _calculate_citation_score(
+    business_name: str,
+    answer_records: list[dict],
+) -> dict:
     _log_section(f"Step 3 — Citation score (checking mentions of '{business_name}')")
 
-    lines = answers_text.split("\n")
-    mention_count = 0
     mentioned_in = []
-    q_number = 0
-    current_question = ""
+    provider_mentions = {provider: 0 for provider in PROVIDER_MODELS}
 
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("Q") and ":" in stripped:
-            q_number += 1
-            current_question = stripped
-        if stripped.startswith("A") and ":" in stripped:
-            if _business_name_mentioned(business_name, stripped):
-                mention_count += 1
-                mentioned_in.append(f"Q{q_number}: {current_question}")
-                logger.info(
-                    f"ai_visibility: MENTIONED in Q{q_number}: {stripped[:120]}"
-                    f"{'...' if len(stripped) > 120 else ''}"
-                )
-            else:
-                logger.info(f"ai_visibility: NOT mentioned in Q{q_number}")
+    for record in answer_records:
+        mentioned = any(
+            _business_name_mentioned(business_name, name)
+            for name in record["businesses"]
+        )
+        if not mentioned:
+            continue
 
-    points_per_question = MAX_CITATION_SCORE / TOTAL_QUESTIONS
-    score = mention_count * points_per_question
-    percentage = (score / MAX_CITATION_SCORE) * 100
+        provider = record["provider"]
+        provider_mentions[provider] += 1
+        mentioned_in.append({
+            "provider": provider,
+            "question_number": record["question_number"],
+            "question": record["question"],
+        })
+
+    mention_count = len(mentioned_in)
+    score = (mention_count / TOTAL_AI_ANSWERS) * MAX_CITATION_SCORE
+    percentage = (mention_count / TOTAL_AI_ANSWERS) * 100
 
     logger.info(
         f"ai_visibility: citation results — "
-        f"mentions={mention_count}/{TOTAL_QUESTIONS}, "
+        f"mentions={mention_count}/{TOTAL_AI_ANSWERS}, "
         f"score={score:.2f}/{MAX_CITATION_SCORE}, "
         f"percentage={percentage:.0f}%"
     )
 
-    if mentioned_in:
-        logger.info("ai_visibility: business appeared in:")
-        for entry in mentioned_in:
-            logger.info(f"ai_visibility:   - {entry}")
-    else:
-        logger.info(f"ai_visibility: '{business_name}' was not mentioned in any answer")
-
     return {
         "mentions": mention_count,
-        "total_questions": TOTAL_QUESTIONS,
+        "total_answers": TOTAL_AI_ANSWERS,
+        "total_questions": TOTAL_AI_ANSWERS,
         "max_score": MAX_CITATION_SCORE,
         "score": round(score, 2),
         "percentage": round(percentage),
+        "mentions_by_provider": provider_mentions,
         "mentioned_in": mentioned_in,
     }
 
 
-def _calculate_exposure_fairness(business_name: str, answers_text: str) -> dict:
+def _calculate_exposure_fairness(
+    business_name: str,
+    answer_records: list[dict],
+) -> dict:
     _log_section(f"Step 4 — Exposure fairness (position of '{business_name}')")
 
-    lines = answers_text.split("\n")
-    position_scores = []
+    positions = []
     position_details = []
-    q_num = 0
 
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("Q") and ":" in stripped:
-            q_num += 1
-
-        if stripped.startswith("A") and ":" in stripped:
-            if not _business_name_mentioned(business_name, stripped):
-                continue
-
-            answer_body = stripped.split(":", 1)[1].strip()
-            raw_names = re.split(r",|;|\d+\.|•|-", answer_body)
-            names = [name.strip() for name in raw_names if name.strip()]
-            total_names = len(names)
-
-            if total_names == 0:
-                logger.warning(
-                    f"ai_visibility: Q{q_num} mentions '{business_name}' but no names could be parsed"
-                )
-                continue
-
-            business_index = None
-            for index, name in enumerate(names):
-                if _business_name_mentioned(business_name, name):
-                    business_index = index
-                    break
-
-            if business_index is None:
-                logger.warning(
-                    f"ai_visibility: Q{q_num} text matched '{business_name}' but name not found in parsed list"
-                )
-                continue
-
-            if business_index == 0:
-                position = "first"
-            elif business_index == total_names - 1:
-                position = "last"
-            else:
-                position = "middle"
-
-            position_scores.append(position)
-            position_details.append({
-                "question": q_num,
-                "position": position,
-                "index": business_index + 1,
-                "total_names": total_names,
-            })
-
-            logger.info(
-                f"ai_visibility: Q{q_num}: '{business_name}' → "
-                f"position {business_index + 1}/{total_names} → {position.upper()}"
-            )
-
-    if position_scores:
-        first_count = position_scores.count("first")
-        middle_count = position_scores.count("middle")
-        last_count = position_scores.count("last")
-
-        avg_position = max(
-            ["first", "middle", "last"],
-            key=lambda position: position_scores.count(position),
+    for record in answer_records:
+        businesses = record["businesses"]
+        business_index = next(
+            (
+                index
+                for index, name in enumerate(businesses)
+                if _business_name_mentioned(business_name, name)
+            ),
+            None,
         )
-        exposure_score = POSITION_POINTS[avg_position]
 
-        logger.info("ai_visibility: position breakdown:")
-        logger.info(f"ai_visibility:   first  : {first_count} time(s)")
-        logger.info(f"ai_visibility:   middle : {middle_count} time(s)")
-        logger.info(f"ai_visibility:   last   : {last_count} time(s)")
-        logger.info(f"ai_visibility: average position : {avg_position.upper()}")
+        if business_index is None:
+            continue
+
+        if business_index == 0:
+            position = "first"
+        elif business_index == len(businesses) - 1:
+            position = "last"
+        else:
+            position = "middle"
+
+        positions.append(position)
+        position_details.append({
+            "provider": record["provider"],
+            "question_number": record["question_number"],
+            "question": record["question"],
+            "position": position,
+            "index": business_index + 1,
+            "total_names": len(businesses),
+        })
         logger.info(
-            f"ai_visibility: exposure score : {exposure_score}/{MAX_EXPOSURE_SCORE}"
+            f"ai_visibility: exposure mention — "
+            f"provider={record['provider'].upper()}, "
+            f"Q{record['question_number']}: {record['question']} | "
+            f"position={business_index + 1}/{len(businesses)} "
+            f"({position.upper()})"
         )
+
+    first_count = positions.count("first")
+    middle_count = positions.count("middle")
+    last_count = positions.count("last")
+
+    if positions:
+        average_position = max(
+            POSITION_POINTS,
+            key=lambda position: positions.count(position),
+        )
+        exposure_score = sum(
+            POSITION_POINTS[position]
+            for position in positions
+        ) / len(positions)
     else:
-        first_count = middle_count = last_count = 0
-        avg_position = "not found"
+        average_position = "not found"
         exposure_score = 0
-        logger.warning(
-            f"ai_visibility: '{business_name}' not found in any answer list — exposure score: 0"
+        logger.info(
+            f"ai_visibility: exposure — '{business_name}' was not mentioned "
+            f"in any of the {TOTAL_AI_ANSWERS} answers"
+        )
+
+    logger.info(
+        f"ai_visibility: exposure results — first={first_count}, "
+        f"middle={middle_count}, last={last_count}, "
+        f"score={exposure_score:.2f}/{MAX_EXPOSURE_SCORE}"
+    )
+    if position_details:
+        mentioned_answers = ", ".join(
+            f"{detail['provider'].upper()} A{detail['question_number']}"
+            for detail in position_details
+        )
+        logger.info(
+            f"ai_visibility: exposure business mentioned in answers — "
+            f"{mentioned_answers}"
         )
 
     return {
@@ -314,9 +305,11 @@ def _calculate_exposure_fairness(business_name: str, answers_text: str) -> dict:
             "middle": middle_count,
             "last": last_count,
         },
-        "average_position": avg_position,
+        "answers_checked": TOTAL_AI_ANSWERS,
+        "mentions_checked": len(positions),
+        "average_position": average_position,
         "max_score": MAX_EXPOSURE_SCORE,
-        "score": exposure_score,
+        "score": round(exposure_score, 2),
         "details": position_details,
     }
 
@@ -556,14 +549,25 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
     )
 
     questions_text = _generate_questions(business_type, business_loc, business_name)
-    answers_text = _fetch_answers(business_type, business_loc, questions_text)
+    questions = _parse_questions(questions_text)
+
+    _log_section("Step 2 — Fetching answers from all AI providers")
+    provider_results = fetch_answers_from_all_providers(
+        business_type,
+        business_loc,
+        questions,
+    )
+    answer_records = _all_answer_records(provider_results, questions)
 
     # ---------------- Calculate Citation ---------------- #
-    citation_score = _calculate_citation_score(business_name, answers_text)
+    citation_score = _calculate_citation_score(business_name, answer_records)
     
     
     # ---------------- Calculate Exposure Fairness ---------------- #
-    exposure_fairness = _calculate_exposure_fairness(business_name, answers_text)
+    exposure_fairness = _calculate_exposure_fairness(
+        business_name,
+        answer_records,
+    )
     
     
     # ---------------- Calculate Sentiment Analysis ---------------- #
@@ -587,13 +591,25 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
         f'ai_visibility: "max_DDI_AI_visibility_score": {MAX_DDI_AI_VISIBILITY_SCORE}'
     )
 
+    successful_providers = sum(
+        result["status"] == "success"
+        for result in provider_results.values()
+    )
+    analysis_status = (
+        "success"
+        if successful_providers == len(PROVIDER_MODELS)
+        else "partial"
+    )
+
     result = {
-        "status": "success",
+        "status": analysis_status,
         "business_name": business_name,
         "business_type": business_type,
         "business_location": business_loc,
-        "questions": questions_text,
-        "answers": answers_text,
+        "questions": questions,
+        "answers": provider_results,
+        "successful_providers": successful_providers,
+        "total_providers": len(PROVIDER_MODELS),
         "citation_score": citation_score,
         "exposure_fairness": exposure_fairness,
         "sentiment_analysis": sentiment_analysis,
@@ -608,7 +624,7 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
     )
     logger.info(
         f"ai_visibility: citation — "
-        f"{citation_score['mentions']}/{TOTAL_QUESTIONS} mentions, "
+        f"{citation_score['mentions']}/{TOTAL_AI_ANSWERS} mentions, "
         f"score={citation_score['score']}/{MAX_CITATION_SCORE}, "
         f"percentage={citation_score['percentage']}%"
     )
