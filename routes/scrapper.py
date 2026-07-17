@@ -8,7 +8,6 @@ from services.scrapper_services import (
     scrape_reviews as run_scrape_reviews,
 )
 from services.webhook_poster import post_to_webhook
-from utils.auth_utils import verify_secret_key
 
 
 router = APIRouter(
@@ -33,8 +32,7 @@ async def _run_scrape_reviews_and_notify(payload: ScrapeRequest) -> None:
 
 @router.post(
     "/api/scrape-reviews",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(verify_secret_key)]
+    status_code=status.HTTP_200_OK
 )
 
 def scrape_reviews(payload: ScrapeRequest, background_tasks: BackgroundTasks):
@@ -70,8 +68,7 @@ def scrape_reviews(payload: ScrapeRequest, background_tasks: BackgroundTasks):
 
 @router.delete(
     "/api/scrape-reviews",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(verify_secret_key)],
+    status_code=status.HTTP_200_OK
 )
 def delete_scraped_reviews(
     business_name: str = Query(

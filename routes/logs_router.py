@@ -2,7 +2,6 @@
 import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
-from utils.auth_utils import verify_secret_key
 from services.logger_services import logger
 
 router = APIRouter(
@@ -12,7 +11,7 @@ router = APIRouter(
 
 LOG_FILE_PATH = "logs/app.log"
 
-@router.get("/download", status_code=status.HTTP_200_OK, dependencies=[Depends(verify_secret_key)])
+@router.get("/download", status_code=status.HTTP_200_OK)
 async def download_logs():
     """
     Downloads the application log file.

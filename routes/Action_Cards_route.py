@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from schema.action_cards_schema import ActionCardsRequest
 from services.Action_Cards_services import get_action_cards_data
 from services.logger_services import logger
-from utils.auth_utils import verify_secret_key
 
 router = APIRouter(
     tags=["Action Cards"],
@@ -13,9 +12,9 @@ router = APIRouter(
 
 @router.post(
     "/action-cards",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(verify_secret_key)],
+    status_code=status.HTTP_200_OK
 )
+
 def action_cards(payload: ActionCardsRequest):
     logger.info(
         "action_cards route: POST /api/action-cards — "

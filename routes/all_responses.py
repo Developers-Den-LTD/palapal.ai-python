@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from schema.all_responses_schema import AllResponsesRequest
 from services.all_responses_services import get_all_responses
 from services.logger_services import logger
-from utils.auth_utils import verify_secret_key
 
 router = APIRouter(
     tags=["All Responses"],
@@ -13,8 +12,7 @@ router = APIRouter(
 
 @router.post(
     "/all-responses",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(verify_secret_key)],
+    status_code=status.HTTP_200_OK
 )
 def all_responses(payload: AllResponsesRequest):
     logger.info(

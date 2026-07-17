@@ -3,15 +3,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from schema.url_finder import BusinessSearchRequest
 from services.logger_services import logger
 from services.url_finder_services import find_business_links as run_find_business_links
-from utils.auth_utils import verify_secret_key
 
 router = APIRouter(tags=["Scraper"], prefix="/scraper")
 
 
 @router.post(
     "/find-business",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(verify_secret_key)],
+    status_code=status.HTTP_200_OK
 )
 def find_business_links(payload: BusinessSearchRequest):
     try:

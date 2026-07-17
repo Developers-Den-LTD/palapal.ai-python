@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from schema.pending_responses_schema import PendingResponsesRequest
 from services.logger_services import logger
 from services.pending_responses_services import get_pending_responses
-from utils.auth_utils import verify_secret_key
 
 router = APIRouter(
     tags=["Pending Responses"],
@@ -13,8 +12,7 @@ router = APIRouter(
 
 @router.post(
     "/pending-responses",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(verify_secret_key)],
+    status_code=status.HTTP_200_OK
 )
 def pending_responses(payload: PendingResponsesRequest):
     logger.info(

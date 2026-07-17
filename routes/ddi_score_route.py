@@ -5,7 +5,6 @@ from schema.ddi_score_schema import DDIScoreRequest
 from services.ddi_score_services import calculate_ddi_score
 from services.logger_services import logger
 from services.webhook_poster import post_to_webhook
-from utils.auth_utils import verify_secret_key
 
 router = APIRouter(
     tags=["DDI Score"],
@@ -38,8 +37,7 @@ async def _run_ddi_score_and_notify(payload: DDIScoreRequest) -> None:
 
 
 @router.post(
-    "/ddi-score",
-    dependencies=[Depends(verify_secret_key)],
+    "/ddi-score"
 )
 async def ddi_score(
     payload: DDIScoreRequest,

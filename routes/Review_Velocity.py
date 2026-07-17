@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from schema.review_velocity_schema import ReviewVelocityRequest
 from services.Review_velocity_services import analyze_reputation_score
 from services.logger_services import logger
-from utils.auth_utils import verify_secret_key
 
 router = APIRouter(
     tags=["Reputation Score"],
@@ -13,8 +12,7 @@ router = APIRouter(
 
 @router.post(
     "/review-velocity",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(verify_secret_key)],
+    status_code=status.HTTP_200_OK
 )
 def review_velocity(payload: ReviewVelocityRequest):
     logger.info(

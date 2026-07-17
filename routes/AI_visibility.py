@@ -3,7 +3,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from schema.AI_visibility_schema import AIVisibilityRequest
 from services.AI_visibility_scervices import analyze_ai_visibility
 from services.logger_services import logger
-from utils.auth_utils import verify_secret_key
 
 router = APIRouter(
     tags=["AI Visibility"],
@@ -30,8 +29,7 @@ async def _run_ai_visibility_and_notify(payload: AIVisibilityRequest) -> None:
 
 @router.post(
     "/ai-visibility",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(verify_secret_key)],
+    status_code=status.HTTP_200_OK
 )
 def ai_visibility(payload: AIVisibilityRequest, background_tasks: BackgroundTasks):
     logger.info(

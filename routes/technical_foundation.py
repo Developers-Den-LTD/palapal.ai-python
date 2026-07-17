@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from schema.technical_foundation_schema import TechnicalFoundationRequest
 from services.logger_services import logger
 from services.technical_foundation import check_technical_foundation
-from utils.auth_utils import verify_secret_key
 
 router = APIRouter(
     tags=["Technical Foundation"],
@@ -60,8 +59,7 @@ def run_technical_foundation(website_url: str, business_name: str):
 
 @router.post(
     "/technical-foundation",
-    status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(verify_secret_key)],
+    status_code=status.HTTP_202_ACCEPTED
 )
 def technical_foundation(
     payload: TechnicalFoundationRequest,
