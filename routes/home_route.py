@@ -16,6 +16,3 @@ def home():
         "status": "success"
     }
 
-
-
-
