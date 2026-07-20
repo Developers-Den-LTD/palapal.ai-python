@@ -4,7 +4,9 @@ from services.s3_service import load_scraped_result_data
 PLATFORMS = ("google_maps", "yelp", "tripadvisor")
 
 
-def _is_pending(owner_reply) -> bool:
+def _is_pending(owner_reply, comment) -> bool:
+    if comment is None or not str(comment).strip():
+        return False
     if owner_reply is None:
         return True
     return not str(owner_reply).strip()
@@ -63,7 +65,7 @@ def get_pending_responses(business_name: str) -> dict:
     for platform in PLATFORMS:
         reviews = scraped_data.get(platform, {}).get("reviews", [])
         for review in reviews:
-            if _is_pending(review.get("owner_reply")):
+            if _is_pending(review.get("owner_reply"), review.get("comment")):
                 pending_by_platform[platform].append(_extract_pending_review(review))
 
         logger.info(
