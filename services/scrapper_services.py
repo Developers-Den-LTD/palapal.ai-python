@@ -336,7 +336,116 @@ def extract_reviews(items):
     return reviews
 
 
-def _scrape_google_maps(full_search_query: str):
+GOOGLE_PLACE_MATCH_LIMIT = 20
+_GOOGLE_PLACE_ID_PATTERN = re.compile(r"^ChI[\w-]+$", re.IGNORECASE)
+
+
+def _looks_like_google_place_id(value: str | None) -> bool:
+    if not value or not str(value).strip():
+        return False
+    return bool(_GOOGLE_PLACE_ID_PATTERN.match(str(value).strip()))
+
+
+def _resolve_google_place_id(google_place_id: str | None, exact_place: str | None) -> str | None:
+    if google_place_id and str(google_place_id).strip():
+        return str(google_place_id).strip()
+    if exact_place and _looks_like_google_place_id(exact_place):
+        return exact_place.strip()
+    return None
+
+
+def _build_google_search_query(
+    *,
+    business_name: str,
+    location: str,
+    branch_name: str | None = None,
+    exact_place: str | None = None,
+    google_place_id: str | None = None,
+) -> str:
+    parts = [business_name, location]
+
+    if branch_name and str(branch_name).strip():
+        parts.append(str(branch_name).strip())
+    elif exact_place and not _resolve_google_place_id(google_place_id, exact_place):
+        parts.append(str(exact_place).strip())
+
+    return " ".join(part for part in parts if part)
+
+
+def _extract_place_id_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    match = re.search(r"query_place_id=([^&]+)", url, flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _find_place_by_google_id(items: list[dict], google_place_id: str) -> dict | None:
+    google_place_id = google_place_id.strip()
+
+    for item in items:
+        if item.get("placeId") == google_place_id:
+            return item
+
+        url_place_id = _extract_place_id_from_url(item.get("url"))
+        if url_place_id == google_place_id:
+            return item
+
+        item_url = item.get("url") or ""
+        if google_place_id in item_url:
+            return item
+
+    return None
+
+
+def _extract_google_business_address(item: dict) -> str:
+    address = item.get("address") or item.get("locatedIn")
+    if address:
+        return address
+
+    parts = [
+        item.get("street"),
+        item.get("city"),
+        item.get("state"),
+        item.get("countryCode"),
+    ]
+    joined = ", ".join(part for part in parts if part)
+    return joined or "N/A"
+
+
+def _extract_google_business_info(item: dict) -> tuple[str, str, str]:
+    business_title = item.get("title") or item.get("name") or "N/A"
+    business_address = _extract_google_business_address(item)
+    business_phone = (
+        item.get("phone")
+        or item.get("internationalPhoneNumber")
+        or "N/A"
+    )
+    return business_title, business_address, business_phone
+
+
+def _extract_google_reviews_from_item(item: dict) -> list[dict]:
+    google_reviews = []
+
+    for review in item.get("reviews", []):
+        owner_reply = (
+            review.get("responseFromOwnerText")
+            or review.get("ownerResponse")
+            or review.get("response")
+        )
+        google_reviews.append({
+            "author": review.get("name", "Anonymous"),
+            "rating": review.get("stars", "N/A"),
+            "date": format_date(
+                review.get("publishedAtDate") or review.get("publishAt")
+            ),
+            "comment": review.get("text", "[No text]"),
+            "owner_reply": owner_reply or None,
+        })
+
+    return google_reviews
+
+
+def _scrape_google_maps(full_search_query: str, google_place_id: str | None = None):
     google_reviews = []
     google_status = "❌ Failed"
     business_title = "N/A"
@@ -344,42 +453,64 @@ def _scrape_google_maps(full_search_query: str):
     business_phone = "N/A"
 
     try:
-        logger.info("scrape_reviews: starting Google Maps scrape")
-        google_run = _run_actor_with_retry("compass/crawler-google-places", {
+        logger.info(
+            "scrape_reviews: starting Google Maps scrape "
+            f"query='{full_search_query}', google_place_id='{google_place_id or 'none'}'"
+        )
+        actor_input = {
             "searchStringsArray": [full_search_query],
-            "maxCrawledPlacesPerSearch": 1,
-            "maxReviews":10,
+            "maxCrawledPlacesPerSearch": (
+                GOOGLE_PLACE_MATCH_LIMIT if google_place_id else 1
+            ),
+            "maxReviews": 10,
             "language": "en",
             "reviewsSort": "newest",
-            "personalDataDeviceType": "desktop"
-        })
-        for item in client.dataset(get_dataset_id(google_run)).list_items().items:
-            business_title = item.get("title") or item.get("name") or business_title
-            business_address = item.get("address") or item.get("locatedIn") or business_address
-            business_phone = (
-                item.get("phone")
-                or item.get("internationalPhoneNumber")
-                or business_phone
+            "personalDataDeviceType": "desktop",
+        }
+        google_run = _run_actor_with_retry(
+            "compass/crawler-google-places",
+            actor_input,
+        )
+        items = list(client.dataset(get_dataset_id(google_run)).list_items().items)
+
+        if google_place_id:
+            matched_item = _find_place_by_google_id(items, google_place_id)
+            if not matched_item:
+                logger.warning(
+                    "scrape_reviews: no Google place matched "
+                    f"place_id='{google_place_id}' among {len(items)} result(s)"
+                )
+                return {
+                    "status": (
+                        f"❌ Failed: No Google place found for "
+                        f"place_id={google_place_id}"
+                    ),
+                    "business_name": business_title,
+                    "business_address": business_address,
+                    "business_phone": business_phone,
+                    "google_place_id": google_place_id,
+                    "reviews": [],
+                }
+
+            items = [matched_item]
+            logger.info(
+                "scrape_reviews: matched Google place "
+                f"place_id='{google_place_id}', "
+                f"title='{matched_item.get('title') or matched_item.get('name')}'"
             )
 
-            for review in item.get("reviews", []):
-                owner_reply = (
-                    review.get("responseFromOwnerText")
-                    or review.get("ownerResponse")
-                    or review.get("response")
+        if not items:
+            google_status = "❌ Failed: No Google Maps results returned"
+            logger.warning("scrape_reviews: Google Maps returned no items")
+        else:
+            for item in items:
+                business_title, business_address, business_phone = (
+                    _extract_google_business_info(item)
                 )
-                google_reviews.append({
-                    "author": review.get("name", "Anonymous"),
-                    "rating": review.get("stars", "N/A"),
-                    "date": format_date(
-                        review.get("publishedAtDate") or review.get("publishAt")
-                    ),
-                    "comment": review.get("text", "[No text]"),
-                    "owner_reply": owner_reply or None,
-                })
+                google_reviews.extend(_extract_google_reviews_from_item(item))
 
-        google_status = f"✅ Success — {len(google_reviews)} reviews fetched"
-        logger.info(f"scrape_reviews: Google Maps {google_status}")
+            google_status = f"✅ Success — {len(google_reviews)} reviews fetched"
+            logger.info(f"scrape_reviews: Google Maps {google_status}")
     except Exception as e:
         google_status = f"❌ Failed: {str(e)}"
         logger.exception(f"scrape_reviews: Google Maps scrape failed — {e}")
@@ -389,6 +520,7 @@ def _scrape_google_maps(full_search_query: str):
         "business_name": business_title,
         "business_address": business_address,
         "business_phone": business_phone,
+        "google_place_id": google_place_id,
         "reviews": google_reviews,
     }
 
@@ -602,13 +734,25 @@ def _skipped_platform_result(platform: str) -> dict:
 
 
 def scrape_reviews(payload: ScrapeRequest) -> dict:
-    logger.info(
-        f"scrape_reviews: request received business='{payload.business_name}', "
-        f"location='{payload.location}', exact_place='{payload.exact_place}', "
-        f"yelp_url='{payload.yelp_url}', tripadvisor_url='{payload.tripadvisor_url}'"
+    google_place_id = _resolve_google_place_id(
+        payload.google_place_id,
+        payload.exact_place,
+    )
+    full_search_query = _build_google_search_query(
+        business_name=payload.business_name,
+        location=payload.location,
+        branch_name=payload.branch_name,
+        exact_place=payload.exact_place,
+        google_place_id=payload.google_place_id,
     )
 
-    full_search_query = f"{payload.business_name} {payload.location} {payload.exact_place}"
+    logger.info(
+        f"scrape_reviews: request received business='{payload.business_name}', "
+        f"business_id='{payload.business_id}', branch_name='{payload.branch_name}', "
+        f"location='{payload.location}', exact_place='{payload.exact_place}', "
+        f"google_place_id='{google_place_id}', "
+        f"yelp_url='{payload.yelp_url}', tripadvisor_url='{payload.tripadvisor_url}'"
+    )
     logger.info(f"scrape_reviews: search query='{full_search_query}'")
 
     yelp_url = normalize_yelp_url(payload.yelp_url)
@@ -629,7 +773,7 @@ def scrape_reviews(payload: ScrapeRequest) -> dict:
             f"'{payload.tripadvisor_url}' -> '{tripadvisor_url}'"
         )
 
-    google = _scrape_google_maps(full_search_query)
+    google = _scrape_google_maps(full_search_query, google_place_id=google_place_id)
 
     if _is_empty_url(yelp_url):
         logger.info("scrape_reviews: Yelp skipped — yelp_url is empty")
@@ -645,6 +789,9 @@ def scrape_reviews(payload: ScrapeRequest) -> dict:
 
     result = {
         "business": full_search_query,
+        "business_id": payload.business_id,
+        "branch_name": payload.branch_name,
+        "google_place_id": google_place_id,
         "scraped_at": datetime.now().strftime("%d %B %Y %H:%M"),
         "summary": {
             "google_maps": google["status"],
@@ -655,6 +802,7 @@ def scrape_reviews(payload: ScrapeRequest) -> dict:
             "business_name": google["business_name"],
             "business_address": google["business_address"],
             "business_phone": google["business_phone"],
+            "google_place_id": google.get("google_place_id"),
             "total_reviews": len(google["reviews"]),
             "reviews": google["reviews"],
         },

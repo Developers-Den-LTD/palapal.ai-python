@@ -40,7 +40,11 @@ def scrape_reviews(payload: ScrapeRequest, background_tasks: BackgroundTasks):
         logger.info(
             f"scrape_reviews route: POST /api/scrape-reviews — "
             f"business='{payload.business_name}', "
-            f"type='{payload.exact_place}', loc='{payload.location}', "
+            f"business_id='{payload.business_id}', "
+            f"branch_name='{payload.branch_name}', "
+            f"loc='{payload.location}', "
+            f"exact_place='{payload.exact_place}', "
+            f"google_place_id='{payload.google_place_id}', "
             f"yelp_url='{payload.yelp_url}', "
             f"tripadvisor_url='{payload.tripadvisor_url}', "
             f"webhook_url='{payload.webhook_url}'"
