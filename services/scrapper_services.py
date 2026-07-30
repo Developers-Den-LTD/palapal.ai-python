@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from pathlib import Path
 import json
@@ -733,7 +734,27 @@ def _skipped_platform_result(platform: str) -> dict:
     }
 
 
-def scrape_reviews(payload: ScrapeRequest) -> dict:
+def _failed_platform_result(platform: str, exc: BaseException) -> dict:
+    logger.exception(f"scrape_reviews: {platform} scrape failed — {exc}")
+    return {
+        "status": f"❌ Failed: {str(exc)}",
+        "business_name": "N/A",
+        "business_address": "N/A",
+        "business_phone": "N/A",
+        "reviews": [],
+    }
+
+
+def _resolve_platform_result(
+    platform: str,
+    result: dict | BaseException,
+) -> dict:
+    if isinstance(result, BaseException):
+        return _failed_platform_result(platform, result)
+    return result
+
+
+async def scrape_reviews(payload: ScrapeRequest) -> dict:
     google_place_id = _resolve_google_place_id(
         payload.google_place_id,
         payload.exact_place,
@@ -773,19 +794,52 @@ def scrape_reviews(payload: ScrapeRequest) -> dict:
             f"'{payload.tripadvisor_url}' -> '{tripadvisor_url}'"
         )
 
-    google = _scrape_google_maps(full_search_query, google_place_id=google_place_id)
+    scrape_tasks: dict[str, asyncio.Task] = {
+        "google_maps": asyncio.create_task(
+            asyncio.to_thread(
+                _scrape_google_maps,
+                full_search_query,
+                google_place_id,
+            )
+        ),
+    }
 
     if _is_empty_url(yelp_url):
         logger.info("scrape_reviews: Yelp skipped — yelp_url is empty")
         yelp = _skipped_platform_result("Yelp")
     else:
-        yelp = _scrape_yelp(yelp_url, full_search_query)
+        scrape_tasks["yelp"] = asyncio.create_task(
+            asyncio.to_thread(_scrape_yelp, yelp_url, full_search_query)
+        )
 
     if _is_empty_url(tripadvisor_url):
         logger.info("scrape_reviews: TripAdvisor skipped — tripadvisor_url is empty")
         tripadvisor = _skipped_platform_result("TripAdvisor")
     else:
-        tripadvisor = _scrape_tripadvisor(tripadvisor_url)
+        scrape_tasks["tripadvisor"] = asyncio.create_task(
+            asyncio.to_thread(_scrape_tripadvisor, tripadvisor_url)
+        )
+
+    logger.info(
+        "scrape_reviews: running platform scrapes in parallel — "
+        f"platforms={list(scrape_tasks.keys())}"
+    )
+
+    platform_results = await asyncio.gather(
+        *scrape_tasks.values(),
+        return_exceptions=True,
+    )
+
+    resolved_results = {
+        platform: _resolve_platform_result(platform, result)
+        for platform, result in zip(scrape_tasks.keys(), platform_results)
+    }
+
+    google = resolved_results["google_maps"]
+    if "yelp" in resolved_results:
+        yelp = resolved_results["yelp"]
+    if "tripadvisor" in resolved_results:
+        tripadvisor = resolved_results["tripadvisor"]
 
     result = {
         "business": full_search_query,

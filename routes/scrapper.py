@@ -18,7 +18,7 @@ router = APIRouter(
 async def _run_scrape_reviews_and_notify(payload: ScrapeRequest) -> None:
     try:
         webhook_url = str(payload.webhook_url)
-        result = run_scrape_reviews(payload)
+        result = await run_scrape_reviews(payload)
 
 
         await post_to_webhook(webhook_url, result)
