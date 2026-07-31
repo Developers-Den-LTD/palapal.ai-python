@@ -49,12 +49,14 @@ async def calculate_ddi_score(payload: DDIScoreRequest) -> dict:
     _log_section("DDI Score — starting parallel analysis")
     logger.info(
         f"ddi_score: business='{payload.business_name}', "
+        f"business_id='{payload.business_id}', "
         f"type='{payload.business_type}', loc='{payload.business_loc}', "
         f"website='{payload.website_url}'"
     )
 
     ai_payload = AIVisibilityRequest(
         business_name=payload.business_name,
+        business_id=payload.business_id,
         business_type=payload.business_type,
         business_loc=payload.business_loc,
     )
@@ -62,11 +64,16 @@ async def calculate_ddi_score(payload: DDIScoreRequest) -> dict:
     ai_task = asyncio.to_thread(analyze_ai_visibility, ai_payload)
 
     reputation_task = asyncio.to_thread(
-        analyze_reputation_score, payload.business_name
+        analyze_reputation_score,
+        payload.business_name,
+        payload.business_id,
     )
     
     technical_task = asyncio.to_thread(
-        check_technical_foundation, payload.website_url, payload.business_name
+        check_technical_foundation,
+        payload.website_url,
+        payload.business_name,
+        payload.business_id,
     )
 
     ai_result, reputation_result, technical_result = await asyncio.gather(
@@ -123,6 +130,7 @@ async def calculate_ddi_score(payload: DDIScoreRequest) -> dict:
     response = {
         "status": status,
         "business_name": payload.business_name,
+        "business_id": payload.business_id,
         "business_type": payload.business_type,
         "business_location": payload.business_loc,
         "website_url": payload.website_url,
@@ -160,8 +168,12 @@ async def calculate_ddi_score(payload: DDIScoreRequest) -> dict:
     if errors:
         response["errors"] = errors
 
-    s3_key = get_ddi_score_s3_key(payload.business_name)
-    if upload_ddi_score_result_to_s3(payload.business_name, response):
+    s3_key = get_ddi_score_s3_key(payload.business_name, payload.business_id)
+    if upload_ddi_score_result_to_s3(
+        payload.business_name,
+        response,
+        payload.business_id,
+    ):
         logger.info(
             "ddi_score: stored result in S3 — "
             f"bucket={settings.AWS_S3_BUCKET}, key={s3_key}"

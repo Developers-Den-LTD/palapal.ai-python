@@ -21,13 +21,7 @@ def action_cards(payload: ActionCardsRequest):
         f"business='{payload.business_name}', id='{payload.business_id}'"
     )
     try:
-        # 1. Fetch data using the business name as before
-        result = get_action_cards_data(payload.business_name)
-        
-        # 2. Append the incoming business_id to the output dictionary
-        if isinstance(result, dict):
-            result["business_id"] = payload.business_id
-        
+        result = get_action_cards_data(payload.business_name, payload.business_id)
         if result.get("status") == "success":
             logger.info(
                 "action_cards route: request completed successfully — "

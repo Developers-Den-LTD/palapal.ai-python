@@ -6,7 +6,7 @@ from services.s3_service import (
     download_ddi_score_result_from_s3,
     get_ddi_score_s3_key,
 )
-from utils.scraped_result_paths import get_ddi_score_result_path
+from utils.scraped_result_paths import build_scrape_storage_slug, get_ddi_score_result_path
 
 
 def _load_local_ddi_score(business_name: str, local_path) -> dict:
@@ -214,17 +214,22 @@ def _build_action_cards(ddi_result: dict | None) -> dict:
     }
 
 
-def get_action_cards_data(business_name: str) -> dict:
+def get_action_cards_data(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> dict:
     """
     Load DDI score result for a business.
-    Uses local DDI_score/<slug>/Result.json first; downloads from S3 if missing.
+    Uses local DDI_score/<slug>[_business_id]/Result.json first; downloads from S3 if missing.
     """
     business_name = business_name.strip()
-    local_path = get_ddi_score_result_path(business_name)
-    s3_key = get_ddi_score_s3_key(business_name)
+    storage_slug = build_scrape_storage_slug(business_name, business_id)
+    local_path = get_ddi_score_result_path(business_name, business_id)
+    s3_key = get_ddi_score_s3_key(business_name, business_id)
 
     logger.info(
         f"action_cards: request received business='{business_name}', "
+        f"business_id='{business_id}', storage_slug='{storage_slug}', "
         f"local_path='{local_path}', s3_key='{s3_key}'"
     )
 
@@ -233,15 +238,17 @@ def get_action_cards_data(business_name: str) -> dict:
         cards = _build_action_cards(data)
         logger.info(
             f"action_cards: loaded from local cache — business='{business_name}', "
-            f"path='{local_path}'"
+            f"business_id='{business_id}', path='{local_path}'"
         )
         logger.info(
             "action_cards: result ready — "
-            f"business='{business_name}', source='local'"
+            f"business='{business_name}', business_id='{business_id}', source='local'"
         )
         return {
             "status": "success",
             "business_name": business_name,
+            "business_id": business_id,
+            "storage_slug": storage_slug,
             "source": "local",
             "local_path": str(local_path),
             "s3_key": s3_key,
@@ -249,30 +256,47 @@ def get_action_cards_data(business_name: str) -> dict:
         }
 
     logger.info(
-        f"action_cards: not found locally, checking S3 — business='{business_name}'"
+        f"action_cards: not found locally, checking S3 — "
+        f"business='{business_name}', business_id='{business_id}'"
     )
 
-    if not ddi_score_exists_in_s3(business_name):
+    if not ddi_score_exists_in_s3(business_name, business_id):
         logger.warning(
-            f"action_cards: no DDI score found locally or in S3 for '{business_name}'"
+            f"action_cards: no DDI score found locally or in S3 for "
+            f"'{business_name}' (slug='{storage_slug}')"
         )
         return {
             "status": "error",
-            "message": f"No DDI score result found for '{business_name}'.",
+            "message": (
+                f"No DDI score result found for '{business_name}'"
+                f"{f' with business_id={business_id}' if business_id is not None else ''}."
+            ),
             "business_name": business_name,
+            "business_id": business_id,
+            "storage_slug": storage_slug,
             "local_path": str(local_path),
             "s3_key": s3_key,
             "cards": None,
         }
 
-    if not download_ddi_score_result_from_s3(business_name, local_path):
+    if not download_ddi_score_result_from_s3(
+        business_name,
+        local_path,
+        business_id,
+    ):
         logger.error(
-            f"action_cards: failed to download DDI score from S3 for '{business_name}'"
+            f"action_cards: failed to download DDI score from S3 for "
+            f"'{business_name}', business_id='{business_id}'"
         )
         return {
             "status": "error",
-            "message": f"Failed to download DDI score result for '{business_name}' from S3.",
+            "message": (
+                f"Failed to download DDI score result for '{business_name}'"
+                f"{f' with business_id={business_id}' if business_id is not None else ''} from S3."
+            ),
             "business_name": business_name,
+            "business_id": business_id,
+            "storage_slug": storage_slug,
             "local_path": str(local_path),
             "s3_key": s3_key,
             "cards": None,
@@ -282,16 +306,18 @@ def get_action_cards_data(business_name: str) -> dict:
     cards = _build_action_cards(data)
     logger.info(
         f"action_cards: downloaded from S3 and cached locally — "
-        f"business='{business_name}', path='{local_path}'"
+        f"business='{business_name}', business_id='{business_id}', path='{local_path}'"
     )
     logger.info(
         "action_cards: result ready — "
-        f"business='{business_name}', source='s3'"
+        f"business='{business_name}', business_id='{business_id}', source='s3'"
     )
 
     return {
         "status": "success",
         "business_name": business_name,
+        "business_id": business_id,
+        "storage_slug": storage_slug,
         "source": "s3",
         "local_path": str(local_path),
         "s3_key": s3_key,

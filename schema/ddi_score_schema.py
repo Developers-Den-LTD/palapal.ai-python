@@ -1,3 +1,5 @@
+from typing import Optional, Union
+
 from pydantic import BaseModel, Field, HttpUrl
 
 
@@ -6,6 +8,13 @@ class DDIScoreRequest(BaseModel):
         ...,
         description="Name of the business",
         min_length=1,
+    )
+    business_id: Optional[Union[str, int]] = Field(
+        None,
+        description=(
+            "Client-side business identifier. When provided, scraped data and "
+            "DDI results are resolved using businessname_businessid."
+        ),
     )
     business_type: str = Field(
         ...,

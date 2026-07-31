@@ -17,10 +17,10 @@ router = APIRouter(
 def pending_responses(payload: PendingResponsesRequest):
     logger.info(
         "pending_responses route: POST /api/pending-responses — "
-        f"business='{payload.business_name}'"
+        f"business='{payload.business_name}', business_id='{payload.business_id}'"
     )
     try:
-        result = get_pending_responses(payload.business_name)
+        result = get_pending_responses(payload.business_name, payload.business_id)
         if result["status"] == "success":
             logger.info(
                 "pending_responses route: request completed successfully — "

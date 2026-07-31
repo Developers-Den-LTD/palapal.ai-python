@@ -29,6 +29,7 @@ async def _run_ddi_score_and_notify(payload: DDIScoreRequest) -> None:
                 "status": "error",
                 "message": str(e),
                 "business_name": payload.business_name,
+                "business_id": payload.business_id,
                 "business_type": payload.business_type,
                 "business_location": payload.business_loc,
                 "website_url": payload.website_url,
@@ -45,10 +46,12 @@ async def ddi_score(
 ):
     logger.info(
         f"ddi_score route: POST /api/ddi-score — "
-        f"business='{payload.business_name}', "
-        f"type='{payload.business_type}', loc='{payload.business_loc}', "
-        f"website='{payload.website_url}', "
-        f"webhook='{payload.webhook_url}'"
+        f"\nbusiness_name='{payload.business_name}', "
+        f"\nbusiness_id='{payload.business_id}', "
+        f"\nbusiness_type='{payload.business_type}', "
+        f"\nbusiness_location='{payload.business_loc}', "
+        f"\nwebsite_url='{payload.website_url}', "
+        f"\nwebhook_url='{payload.webhook_url}'"
     )
 
     if not payload.webhook_url:
@@ -70,6 +73,7 @@ async def ddi_score(
             "message": "DDI score calculation started. Results will be sent to the webhook URL.",
             "webhook_url": str(payload.webhook_url),
             "business_name": payload.business_name,
+            "business_id": payload.business_id,
             "business_type": payload.business_type,
             "business_location": payload.business_loc,
             "website_url": payload.website_url,

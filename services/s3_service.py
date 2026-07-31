@@ -9,9 +9,9 @@ from botocore.exceptions import ClientError, NoCredentialsError
 from core.config import settings
 from services.logger_services import logger
 from utils.scraped_result_paths import (
+    build_scrape_storage_slug,
     get_ddi_score_result_path,
     get_scraped_result_path,
-    slugify_folder_name,
 )
 
 S3_KEY_PREFIX = "scraping_results"
@@ -30,13 +30,16 @@ def _get_s3_client():
     )
 
 
-def get_s3_key(business_name: str) -> str:
-    folder_slug = slugify_folder_name(business_name)
+def get_s3_key(business_name: str, business_id: str | int | None = None) -> str:
+    folder_slug = build_scrape_storage_slug(business_name, business_id)
     return f"{S3_KEY_PREFIX}/{folder_slug}/{SCRAPED_RESULT_FILENAME}"
 
 
-def get_ddi_score_s3_key(business_name: str) -> str:
-    folder_slug = slugify_folder_name(business_name)
+def get_ddi_score_s3_key(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> str:
+    folder_slug = build_scrape_storage_slug(business_name, business_id)
     return f"{DDI_SCORE_KEY_PREFIX}/{folder_slug}/{DDI_SCORE_RESULT_FILENAME}"
 
 
@@ -69,17 +72,24 @@ def upload_json_to_s3(*, s3_key: str, data: dict) -> bool:
         return False
 
 
-def upload_ddi_score_result_to_s3(business_name: str, result: dict) -> bool:
+def upload_ddi_score_result_to_s3(
+    business_name: str,
+    result: dict,
+    business_id: str | int | None = None,
+) -> bool:
     """
     Upload the DDI score result JSON to:
-      DDI_score/<business_slug>/Result.json
+      DDI_score/<business_slug>[_business_id]/Result.json
     """
-    s3_key = get_ddi_score_s3_key(business_name)
+    s3_key = get_ddi_score_s3_key(business_name, business_id)
     return upload_json_to_s3(s3_key=s3_key, data=result)
 
 
-def business_exists_in_s3(business_name: str) -> bool:
-    s3_key = get_s3_key(business_name)
+def business_exists_in_s3(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> bool:
+    s3_key = get_s3_key(business_name, business_id)
     try:
         _get_s3_client().head_object(
             Bucket=settings.AWS_S3_BUCKET,
@@ -105,9 +115,10 @@ def business_exists_in_s3(business_name: str) -> bool:
 def download_scraped_result_from_s3(
     business_name: str,
     local_path: Path | None = None,
+    business_id: str | int | None = None,
 ) -> bool:
-    local_path = local_path or get_scraped_result_path(business_name)
-    s3_key = get_s3_key(business_name)
+    local_path = local_path or get_scraped_result_path(business_name, business_id)
+    s3_key = get_s3_key(business_name, business_id)
     temp_path = local_path.with_suffix(".json.tmp")
 
     try:
@@ -151,9 +162,10 @@ def download_scraped_result_from_s3(
 def upload_scraped_result_to_s3(
     business_name: str,
     local_file_path: Path | None = None,
+    business_id: str | int | None = None,
 ) -> bool:
-    local_path = local_file_path or get_scraped_result_path(business_name)
-    s3_key = get_s3_key(business_name)
+    local_path = local_file_path or get_scraped_result_path(business_name, business_id)
+    s3_key = get_s3_key(business_name, business_id)
 
     if not local_path.exists():
         logger.error(f"s3_service: cannot upload, local file missing — {local_path}")
@@ -187,13 +199,16 @@ def upload_scraped_result_to_s3(
         return False
 
 
-def ensure_scraped_result_available(business_name: str) -> Path:
+def ensure_scraped_result_available(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> Path:
     """
     Return local path to scraped_result.json.
     Uses local scraping_results first; downloads from S3 into the same path if missing.
     """
     business_name = business_name.strip()
-    local_path = get_scraped_result_path(business_name)
+    local_path = get_scraped_result_path(business_name, business_id)
 
     if local_path.exists():
         logger.info(f"s3_service: using local scraped data — {local_path}")
@@ -203,10 +218,10 @@ def ensure_scraped_result_available(business_name: str) -> Path:
         f"s3_service: business not found locally, checking S3 — business='{business_name}'"
     )
 
-    if not business_exists_in_s3(business_name):
+    if not business_exists_in_s3(business_name, business_id):
         raise FileNotFoundError(f"No scraped data found for '{business_name}'")
 
-    if not download_scraped_result_from_s3(business_name, local_path):
+    if not download_scraped_result_from_s3(business_name, local_path, business_id):
         raise FileNotFoundError(
             f"Failed to download scraped data for '{business_name}' from S3"
         )
@@ -259,18 +274,24 @@ def delete_scraped_result_from_s3(business_name: str) -> dict:
         return result
 
 
-def load_scraped_result_data(business_name: str) -> dict:
+def load_scraped_result_data(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> dict:
     """
     Load scraped_result.json for a business.
     Checks local scraping_results first; downloads from S3 into the same path if missing.
     """
-    local_path = ensure_scraped_result_available(business_name)
+    local_path = ensure_scraped_result_available(business_name, business_id)
     with open(local_path, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
-def ddi_score_exists_in_s3(business_name: str) -> bool:
-    s3_key = get_ddi_score_s3_key(business_name)
+def ddi_score_exists_in_s3(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> bool:
+    s3_key = get_ddi_score_s3_key(business_name, business_id)
     try:
         _get_s3_client().head_object(
             Bucket=settings.AWS_S3_BUCKET,
@@ -298,9 +319,10 @@ def ddi_score_exists_in_s3(business_name: str) -> bool:
 def download_ddi_score_result_from_s3(
     business_name: str,
     local_path: Path | None = None,
+    business_id: str | int | None = None,
 ) -> bool:
-    local_path = local_path or get_ddi_score_result_path(business_name)
-    s3_key = get_ddi_score_s3_key(business_name)
+    local_path = local_path or get_ddi_score_result_path(business_name, business_id)
+    s3_key = get_ddi_score_s3_key(business_name, business_id)
     temp_path = local_path.with_suffix(".json.tmp")
 
     try:

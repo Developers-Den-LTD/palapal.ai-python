@@ -4,7 +4,7 @@ from pathlib import Path
 
 from services.logger_services import logger
 from services.s3_service import load_scraped_result_data
-from utils.scraped_result_paths import slugify_folder_name
+from utils.scraped_result_paths import build_scrape_storage_slug
 
 PLATFORM_MAP = {
     "google_maps": "google",
@@ -259,10 +259,16 @@ def _calculate_response_rate(reviews: list[dict], reference_date: datetime) -> d
     }
 
 
-def _error_result(message: str) -> dict:
+def _error_result(
+    message: str,
+    business_name: str = "",
+    business_id: str | int | None = None,
+) -> dict:
     return {
         "status": "error",
         "message": message,
+        "business_name": business_name,
+        "business_id": business_id,
         "reviews": [],
         "review_velocity": {
             "reviews_last_30_days": 0,
@@ -290,18 +296,21 @@ def _error_result(message: str) -> dict:
     }
 
 
-def analyze_reputation_score(business_name: str) -> dict:
+def analyze_reputation_score(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> dict:
     _log_section("Reputation Score analysis started")
 
     business_name = business_name.strip()
-    folder_slug = slugify_folder_name(business_name)
+    folder_slug = build_scrape_storage_slug(business_name, business_id)
 
     logger.info(
         f"review_velocity: business_name='{business_name}', folder_slug='{folder_slug}'"
     )
 
     try:
-        scraped_data = load_scraped_result_data(business_name)
+        scraped_data = load_scraped_result_data(business_name, business_id)
     except FileNotFoundError:
         logger.warning(
             f"review_velocity: scraped_result.json not found locally or in S3 "
@@ -310,7 +319,9 @@ def analyze_reputation_score(business_name: str) -> dict:
         return _error_result(
             f"No scraped data found for '{business_name}'. "
             f"Expected file at scraping_results/{folder_slug}/scraped_result.json. "
-            "Run scrape API first."
+            "Run scrape API first.",
+            business_name=business_name,
+            business_id=business_id,
         )
 
     business = scraped_data.get("business", business_name)
@@ -362,6 +373,7 @@ def analyze_reputation_score(business_name: str) -> dict:
     result = {
         "status": "success",
         "business_name": business_name,
+        "business_id": business_id,
         "business": scraped_data.get("business"),
         "scraped_at": scraped_data.get("scraped_at"),
         "reference_date": reference_date.strftime(DATE_FORMAT),

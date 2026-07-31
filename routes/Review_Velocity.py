@@ -17,10 +17,13 @@ router = APIRouter(
 def review_velocity(payload: ReviewVelocityRequest):
     logger.info(
         "review_velocity route: POST /api/review-velocity — request received "
-        f"business='{payload.business_name}'"
+        f"business='{payload.business_name}', business_id='{payload.business_id}'"
     )
     try:
-        result = analyze_reputation_score(payload.business_name)
+        result = analyze_reputation_score(
+            payload.business_name,
+            payload.business_id,
+        )
         if result["status"] == "success":
             logger.info(
                 "review_velocity route: request completed successfully — "

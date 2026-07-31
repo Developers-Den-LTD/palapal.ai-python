@@ -35,13 +35,20 @@ def ai_visibility(payload: AIVisibilityRequest, background_tasks: BackgroundTask
     logger.info(
         f"ai_visibility route: POST /api/ai-visibility — "
         f"business='{payload.business_name}', "
+        f"business_id='{payload.business_id}', "
         f"type='{payload.business_type}', loc='{payload.business_loc}'"
     )
     background_tasks.add_task(_run_ai_visibility_and_notify, payload)
     logger.info(
         f"ai_visibility route: request accepted for background processing — "
         f"business='{payload.business_name}', "
+        f"business_id='{payload.business_id}', "
         f"type='{payload.business_type}', loc='{payload.business_loc}'"
     )
 
-    return {"status": "accepted", "message": "Request is being processed in the background."}
+    return {
+        "status": "accepted",
+        "message": "Request is being processed in the background.",
+        "business_name": payload.business_name,
+        "business_id": payload.business_id,
+    }

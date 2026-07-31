@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from core.config import settings
 from services.logger_services import logger
 from services.s3_service import load_scraped_result_data
-from utils.scraped_result_paths import slugify_folder_name
+from utils.scraped_result_paths import build_scrape_storage_slug
 
 PAGESPEED_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 STRATEGIES = ["mobile", "desktop"]
@@ -451,18 +451,21 @@ def _values_match(values: list[str]) -> bool:
     return len(set(values)) == 1
 
 
-def check_nap_consistency(business_name: str) -> dict:
+def check_nap_consistency(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> dict:
     _log_section("Technical Foundation — NAP consistency check started")
 
     business_name = business_name.strip()
-    folder_slug = slugify_folder_name(business_name)
+    folder_slug = build_scrape_storage_slug(business_name, business_id)
 
     logger.info(
         f"technical_foundation: business_name='{business_name}', folder_slug='{folder_slug}'"
     )
 
     try:
-        scraped_data = load_scraped_result_data(business_name)
+        scraped_data = load_scraped_result_data(business_name, business_id)
     except FileNotFoundError:
         message = (
             f"No scraped result is present against this business name: '{business_name}'."
@@ -589,10 +592,14 @@ def calculate_ddi_technical_foundation_score(
     return total
 
 
-def check_technical_foundation(website_url: str, business_name: str) -> dict:
+def check_technical_foundation(
+    website_url: str,
+    business_name: str,
+    business_id: str | int | None = None,
+) -> dict:
     llms_txt_result = check_llms_txt(website_url)
     json_ld_result = check_json_ld(website_url)
-    nap_consistency_result = check_nap_consistency(business_name)
+    nap_consistency_result = check_nap_consistency(business_name, business_id)
 
     _log_section("Technical Foundation — PageSpeed analysis started")
     logger.info(f"technical_foundation: website_url='{website_url}'")
@@ -641,6 +648,8 @@ def check_technical_foundation(website_url: str, business_name: str) -> dict:
                     "status": "error",
                     "message": f"PageSpeed API failed for {strategy}",
                     "website": website_url,
+                    "business_name": business_name,
+                    "business_id": business_id,
                     "details": response.text,
                     "llms_txt": llms_txt_result,
                     "json_ld": json_ld_result,
@@ -696,6 +705,8 @@ def check_technical_foundation(website_url: str, business_name: str) -> dict:
     return {
         "status": "success",
         "website": website_url,
+        "business_name": business_name,
+        "business_id": business_id,
         "results": results,
         "pagespeed_score": pagespeed_score,
         "llms_txt": llms_txt_result,

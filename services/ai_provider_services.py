@@ -10,11 +10,19 @@ from core.config import settings
 from services.logger_services import logger
 
 
+PROVIDER_MODEL_FALLBACKS = {
+    "openai": ["gpt-4o-mini", "gpt-5.4-mini", "gpt-5.4-nano"],
+    "gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+    "anthropic": [
+        "claude-sonnet-4-5-20250929",
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-6",
+    ],
+    "perplexity": ["sonar"],
+}
+
 PROVIDER_MODELS = {
-    "openai": "gpt-4o-mini",
-    "gemini": "gemini-2.5-flash",
-    "anthropic": "claude-sonnet-4-5-20250929",
-    "perplexity": "sonar",
+    provider: models[0] for provider, models in PROVIDER_MODEL_FALLBACKS.items()
 }
 
 
@@ -101,10 +109,10 @@ def _normalize_answers(raw_text: str, questions: list[str]) -> list[dict]:
     ]
 
 
-def _fetch_openai(prompt: str) -> str:
+def _fetch_openai(prompt: str, model: str) -> str:
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
     response = client.chat.completions.create(
-        model=PROVIDER_MODELS["openai"],
+        model=model,
         messages=[
             {
                 "role": "system",
@@ -117,19 +125,19 @@ def _fetch_openai(prompt: str) -> str:
     return response.choices[0].message.content or ""
 
 
-def _fetch_gemini(prompt: str) -> str:
+def _fetch_gemini(prompt: str, model: str) -> str:
     client = genai.Client(api_key=settings.Gemini_API_KEY)
     response = client.models.generate_content(
-        model=PROVIDER_MODELS["gemini"],
+        model=model,
         contents=prompt,
     )
     return response.text or ""
 
 
-def _fetch_anthropic(prompt: str) -> str:
+def _fetch_anthropic(prompt: str, model: str) -> str:
     client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     response = client.messages.create(
-        model=PROVIDER_MODELS["anthropic"],
+        model=model,
         max_tokens=4000,
         system="You are a local business recommendation assistant.",
         messages=[{"role": "user", "content": prompt}],
@@ -141,13 +149,13 @@ def _fetch_anthropic(prompt: str) -> str:
     )
 
 
-def _fetch_perplexity(prompt: str) -> str:
+def _fetch_perplexity(prompt: str, model: str) -> str:
     client = OpenAI(
         api_key=settings.Perplexity_API,
         base_url="https://api.perplexity.ai",
     )
     response = client.chat.completions.create(
-        model=PROVIDER_MODELS["perplexity"],
+        model=model,
         messages=[
             {
                 "role": "system",
@@ -202,47 +210,60 @@ def _fetch_provider_answers(
     prompt: str,
     questions: list[str],
 ) -> dict:
-    model = PROVIDER_MODELS[provider]
-    logger.info(f"ai_visibility: calling {provider} model='{model}'")
+    models = PROVIDER_MODEL_FALLBACKS[provider]
+    last_error: Exception | None = None
 
-    for attempt in range(1, 3):
-        try:
-            raw_text = PROVIDER_FETCHERS[provider](prompt)
-            answers = _normalize_answers(raw_text, questions)
-            answered_count = sum(bool(item["businesses"]) for item in answers)
+    for model_index, model in enumerate(models):
+        logger.info(f"ai_visibility: calling {provider} model='{model}'")
 
-            if answered_count != len(questions):
-                raise ValueError(
-                    f"Expected {len(questions)} answers, "
-                    f"but received {answered_count}"
+        for attempt in range(1, 3):
+            try:
+                raw_text = PROVIDER_FETCHERS[provider](prompt, model)
+                answers = _normalize_answers(raw_text, questions)
+                answered_count = sum(bool(item["businesses"]) for item in answers)
+
+                if answered_count != len(questions):
+                    raise ValueError(
+                        f"Expected {len(questions)} answers, "
+                        f"but received {answered_count}"
+                    )
+
+                logger.info(
+                    f"ai_visibility: {provider} model='{model}' returned "
+                    f"{answered_count}/{len(questions)} answers"
                 )
+                return {
+                    "status": "success",
+                    "model": model,
+                    "answers": answers,
+                }
+            except Exception as exc:
+                last_error = exc
+                if attempt == 1:
+                    logger.warning(
+                        f"ai_visibility: {provider} model='{model}' attempt 1 failed — "
+                        f"{exc}; retrying once"
+                    )
+                    continue
+                break
 
-            logger.info(
-                f"ai_visibility: {provider} returned "
-                f"{answered_count}/{len(questions)} answers"
+        if model_index < len(models) - 1:
+            next_model = models[model_index + 1]
+            logger.warning(
+                f"ai_visibility: {provider} model='{model}' failed — {last_error}; "
+                f"trying fallback model '{next_model}'"
             )
-            return {
-                "status": "success",
-                "model": model,
-                "answers": answers,
-            }
-        except Exception as exc:
-            if attempt == 1:
-                logger.warning(
-                    f"ai_visibility: {provider} attempt 1 failed — "
-                    f"{exc}; retrying once"
-                )
-                continue
 
-            logger.exception(
-                f"ai_visibility: {provider} answer fetch failed — {exc}"
-            )
-            return {
-                "status": "error",
-                "model": model,
-                "answers": [],
-                "error": str(exc),
-            }
+    logger.exception(
+        f"ai_visibility: {provider} answer fetch failed after all model fallbacks — "
+        f"{last_error}"
+    )
+    return {
+        "status": "error",
+        "model": models[-1],
+        "answers": [],
+        "error": str(last_error),
+    }
 
 
 def fetch_answers_from_all_providers(

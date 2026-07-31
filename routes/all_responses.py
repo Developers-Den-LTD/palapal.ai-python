@@ -17,10 +17,10 @@ router = APIRouter(
 def all_responses(payload: AllResponsesRequest):
     logger.info(
         "all_responses route: POST /api/all-responses — "
-        f"business='{payload.business_name}'"
+        f"business='{payload.business_name}', business_id='{payload.business_id}'"
     )
     try:
-        result = get_all_responses(payload.business_name)
+        result = get_all_responses(payload.business_name, payload.business_id)
         if result["status"] == "success":
             logger.info(
                 "all_responses route: request completed successfully — "

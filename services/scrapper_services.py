@@ -55,11 +55,15 @@ def _run_actor_with_retry(actor_id: str, run_input: dict):
     raise last_error
 
 
-def save_scraped_result(data: dict, business_name: str) -> None:
+def save_scraped_result(
+    data: dict,
+    business_name: str,
+    business_id: str | int | None = None,
+) -> None:
     try:
         business_name = business_name.strip()
-        # scraping_results/<business_slug>/scraped_result.json
-        result_path = get_scraped_result_path(business_name)
+        # scraping_results/<business_slug>[_business_id]/scraped_result.json
+        result_path = get_scraped_result_path(business_name, business_id)
         result_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = result_path.with_suffix(".json.tmp")
 
@@ -70,7 +74,7 @@ def save_scraped_result(data: dict, business_name: str) -> None:
         os.replace(temp_path, result_path)
         logger.info(f"save_scraped_result: saved locally to {result_path}")
 
-        if not upload_scraped_result_to_s3(business_name, result_path):
+        if not upload_scraped_result_to_s3(business_name, result_path, business_id):
             logger.error(
                 f"save_scraped_result: S3 upload failed for '{business_name}' "
                 f"(local file kept at {result_path})"
@@ -876,7 +880,7 @@ async def scrape_reviews(payload: ScrapeRequest) -> dict:
         },
     }
 
-    save_scraped_result(result, payload.business_name)
+    save_scraped_result(result, payload.business_name, payload.business_id)
 
     logger.info(
         f"scrape_reviews: completed google={len(google['reviews'])}, "

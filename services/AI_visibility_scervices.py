@@ -11,7 +11,7 @@ from services.ai_provider_services import (
 from services.logger_services import logger
 from services.model_loader import load_sentiment_model
 from services.s3_service import load_scraped_result_data
-from utils.scraped_result_paths import slugify_folder_name
+from utils.scraped_result_paths import build_scrape_storage_slug
 
 TOTAL_QUESTIONS = 10
 TOTAL_AI_ANSWERS = TOTAL_QUESTIONS * len(PROVIDER_MODELS)
@@ -396,19 +396,22 @@ def _calculate_sentiment_score(sentiment_data: dict) -> tuple[int, dict]:
     return final_score, breakdown
 
 
-def _calculate_sentiment_analysis(business_name: str) -> dict:
+def _calculate_sentiment_analysis(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> dict:
     _log_section("Step 5 — Sentiment analysis (scraped reviews)")
 
     model = load_sentiment_model()
 
-    folder_slug = slugify_folder_name(business_name)
+    folder_slug = build_scrape_storage_slug(business_name, business_id)
 
     logger.info(
         f"ai_visibility: business_name='{business_name}', folder_slug='{folder_slug}'"
     )
 
     try:
-        scraped_data = load_scraped_result_data(business_name)
+        scraped_data = load_scraped_result_data(business_name, business_id)
     except FileNotFoundError:
         logger.warning(
             f"ai_visibility: scraped_result.json not found locally or in S3 "
@@ -541,10 +544,12 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
     business_name = payload.business_name.strip()
     business_type = payload.business_type.strip()
     business_loc = payload.business_loc.strip()
+    business_id = payload.business_id
 
     _log_section("AI Visibility analysis started")
     logger.info(
         f"ai_visibility: business='{business_name}', "
+        f"business_id='{business_id}', "
         f"type='{business_type}', loc='{business_loc}'"
     )
 
@@ -571,7 +576,7 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
     
     
     # ---------------- Calculate Sentiment Analysis ---------------- #
-    sentiment_analysis = _calculate_sentiment_analysis(business_name)
+    sentiment_analysis = _calculate_sentiment_analysis(business_name, business_id)
 
 
     citation_result = citation_score["score"]
@@ -604,6 +609,7 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
     result = {
         "status": analysis_status,
         "business_name": business_name,
+        "business_id": business_id,
         "business_type": business_type,
         "business_location": business_loc,
         "questions": questions,
