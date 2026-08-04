@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, status
 
 from schema.review_velocity_schema import ReviewVelocityRequest
 from services.Review_velocity_services import analyze_reputation_score
@@ -10,23 +10,19 @@ router = APIRouter(
 )
 
 
-@router.post(
-    "/review-velocity",
-    status_code=status.HTTP_200_OK
-)
-def review_velocity(payload: ReviewVelocityRequest):
-    logger.info(
-        "review_velocity route: POST /api/review-velocity — request received "
-        f"business='{payload.business_name}', business_id='{payload.business_id}'"
-    )
+def _run_review_velocity(payload: ReviewVelocityRequest) -> None:
     try:
+        logger.info(
+            "review_velocity background: started — "
+            f"business='{payload.business_name}', business_id='{payload.business_id}'"
+        )
         result = analyze_reputation_score(
             payload.business_name,
             payload.business_id,
         )
         if result["status"] == "success":
             logger.info(
-                "review_velocity route: request completed successfully — "
+                "review_velocity background: completed successfully — "
                 f"business='{result.get('business')}', "
                 f"total_reviews={result.get('total_reviews')}, "
                 f"velocity={result['review_velocity']['score']}/{result['review_velocity']['max_score']}, "
@@ -36,13 +32,35 @@ def review_velocity(payload: ReviewVelocityRequest):
             )
         else:
             logger.warning(
-                f"review_velocity route: request completed with error — "
+                "review_velocity background: completed with error — "
                 f"message={result.get('message')}"
             )
-        return result
     except Exception as e:
-        logger.exception(f"review_velocity route: request failed — {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Reputation score analysis failed: {str(e)}",
-        )
+        logger.exception(f"review_velocity background: failed — {e}")
+
+
+@router.post(
+    "/review-velocity",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def review_velocity(
+    payload: ReviewVelocityRequest,
+    background_tasks: BackgroundTasks,
+):
+    logger.info(
+        "review_velocity route: POST /api/review-velocity — request received "
+        f"business='{payload.business_name}', business_id='{payload.business_id}'"
+    )
+
+    background_tasks.add_task(_run_review_velocity, payload)
+    logger.info(
+        "review_velocity route: request accepted for background processing — "
+        f"business='{payload.business_name}', business_id='{payload.business_id}'"
+    )
+
+    return {
+        "status": "accepted",
+        "message": "Reputation score analysis started in background.",
+        "business_name": payload.business_name,
+        "business_id": payload.business_id,
+    }
