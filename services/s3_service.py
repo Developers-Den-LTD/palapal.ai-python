@@ -11,6 +11,7 @@ from services.logger_services import logger
 from utils.scraped_result_paths import (
     build_scrape_storage_slug,
     get_ddi_score_result_path,
+    get_review_replies_result_path,
     get_scraped_result_path,
 )
 
@@ -18,6 +19,7 @@ S3_KEY_PREFIX = "scraping_results"
 SCRAPED_RESULT_FILENAME = "scraped_result.json"
 DDI_SCORE_KEY_PREFIX = "DDI_score"
 DDI_SCORE_RESULT_FILENAME = "Result.json"
+REVIEW_REPLIES_KEY_PREFIX = "Review_Replies"
 
 
 def _get_s3_client():
@@ -41,6 +43,14 @@ def get_ddi_score_s3_key(
 ) -> str:
     folder_slug = build_scrape_storage_slug(business_name, business_id)
     return f"{DDI_SCORE_KEY_PREFIX}/{folder_slug}/{DDI_SCORE_RESULT_FILENAME}"
+
+
+def get_review_replies_s3_key(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> str:
+    folder_slug = build_scrape_storage_slug(business_name, business_id)
+    return f"{REVIEW_REPLIES_KEY_PREFIX}/{folder_slug}"
 
 
 def upload_json_to_s3(*, s3_key: str, data: dict) -> bool:
@@ -82,6 +92,19 @@ def upload_ddi_score_result_to_s3(
       DDI_score/<business_slug>[_business_id]/Result.json
     """
     s3_key = get_ddi_score_s3_key(business_name, business_id)
+    return upload_json_to_s3(s3_key=s3_key, data=result)
+
+
+def upload_review_replies_result_to_s3(
+    business_name: str,
+    result: dict,
+    business_id: str | int | None = None,
+) -> bool:
+    """
+    Upload review reply results to:
+      Review_Replies/<business_slug>[_business_id]
+    """
+    s3_key = get_review_replies_s3_key(business_name, business_id)
     return upload_json_to_s3(s3_key=s3_key, data=result)
 
 
@@ -361,3 +384,96 @@ def download_ddi_score_result_from_s3(
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
         return False
+
+
+def review_replies_exists_in_s3(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> bool:
+    s3_key = get_review_replies_s3_key(business_name, business_id)
+    try:
+        _get_s3_client().head_object(
+            Bucket=settings.AWS_S3_BUCKET,
+            Key=s3_key,
+        )
+        logger.info(f"s3_service: review replies found in S3 — key={s3_key}")
+        return True
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        logger.error(f"s3_service: S3 head_object failed for key={s3_key} — {exc}")
+        return False
+    except NoCredentialsError as exc:
+        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
+        return False
+    except Exception as exc:
+        logger.error(
+            f"s3_service: unexpected error checking review replies in S3 for key={s3_key} — {exc}"
+        )
+        return False
+
+
+def download_review_replies_result_from_s3(
+    business_name: str,
+    local_path: Path | None = None,
+    business_id: str | int | None = None,
+) -> bool:
+    local_path = local_path or get_review_replies_result_path(business_name, business_id)
+    s3_key = get_review_replies_s3_key(business_name, business_id)
+    temp_path = local_path.with_suffix(".json.tmp")
+
+    try:
+        logger.info(f"s3_service: downloading review replies from S3 — key={s3_key}")
+        response = _get_s3_client().get_object(
+            Bucket=settings.AWS_S3_BUCKET,
+            Key=s3_key,
+        )
+        body = response["Body"].read()
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(temp_path, "wb") as file:
+            file.write(body)
+        os.replace(temp_path, local_path)
+
+        logger.info(f"s3_service: review replies download completed — {local_path}")
+        return True
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("404", "NoSuchKey", "NotFound"):
+            logger.warning(f"s3_service: review replies not found in S3 — key={s3_key}")
+        else:
+            logger.error(
+                f"s3_service: review replies download failed for key={s3_key} — {exc}"
+            )
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        return False
+    except (NoCredentialsError, OSError) as exc:
+        logger.error(f"s3_service: review replies download failed for '{business_name}' — {exc}")
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        return False
+    except Exception as exc:
+        logger.error(
+            f"s3_service: unexpected review replies download error for '{business_name}' — {exc}"
+        )
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        return False
+
+
+def load_review_replies_result_data(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> dict | None:
+    local_path = get_review_replies_result_path(business_name, business_id)
+
+    if not local_path.exists() and review_replies_exists_in_s3(business_name, business_id):
+        download_review_replies_result_from_s3(business_name, local_path, business_id)
+
+    if not local_path.exists():
+        return None
+
+    with open(local_path, "r", encoding="utf-8") as file:
+        return json.load(file)

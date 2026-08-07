@@ -7,11 +7,13 @@ PLATFORMS = ("google_maps", "yelp", "tripadvisor")
 
 def _extract_review(review: dict) -> dict:
     return {
+        "UUID": review.get("UUID"),
         "author": review.get("author"),
         "rating": review.get("rating"),
         "date": review.get("date"),
         "comment": review.get("comment"),
         "owner_reply": review.get("owner_reply"),
+        "AI_Draft": review.get("AI_Draft"),
     }
 
 

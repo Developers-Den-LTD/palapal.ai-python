@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import time
+import uuid
 
 from apify_client import ApifyClient
 
@@ -724,6 +725,18 @@ def _scrape_tripadvisor(tripadvisor_url: str | None):
     }
 
 
+def _assign_review_uuids(result: dict) -> dict:
+    for platform in ("google_maps", "yelp", "tripadvisor"):
+        reviews = result.get(platform, {}).get("reviews", [])
+        for index, review in enumerate(reviews):
+            reviews[index] = {
+                "UUID": str(uuid.uuid4()),
+                **review,
+                "AI_Draft": None,
+            }
+    return result
+
+
 def _is_empty_url(url: str | None) -> bool:
     return not url or not str(url).strip()
 
@@ -880,6 +893,7 @@ async def scrape_reviews(payload: ScrapeRequest) -> dict:
         },
     }
 
+    result = _assign_review_uuids(result)
     save_scraped_result(result, payload.business_name, payload.business_id)
 
     logger.info(

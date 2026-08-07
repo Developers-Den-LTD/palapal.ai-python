@@ -1,9 +1,15 @@
+import json
+
 import httpx
 
 from services.logger_services import logger
 
 
 async def post_to_webhook(webhook_url: str, payload: dict) -> None:
+    logger.info(
+        f"webhook_poster: posting payload to {webhook_url} — "
+        f"{json.dumps(payload, ensure_ascii=False, default=str)}"
+    )
     timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
