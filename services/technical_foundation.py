@@ -3,7 +3,10 @@ import json
 import re
 import time
 from urllib.parse import urlparse
+
+import phonenumbers
 from bs4 import BeautifulSoup
+from phonenumbers import NumberParseException
 
 from core.config import settings
 from services.logger_services import logger
@@ -24,6 +27,7 @@ MAX_DDI_TECHNICAL_FOUNDATION_SCORE = (
     + MAX_NAP_CONSISTENCY_SCORE
 )
 NAP_PLATFORMS = ("google_maps", "yelp", "tripadvisor")
+FALLBACK_PHONE_REGIONS = ("US", "GB", "CA", "AU", "IN", "PK", "IE", "DE", "FR")
 JSON_LD_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -362,15 +366,76 @@ def _normalize_business_name(name: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def _normalize_phone(phone: str) -> str:
+def _detect_region_from_phones(platform_nap: dict) -> str | None:
+    for platform in NAP_PLATFORMS:
+        phone = (platform_nap.get(platform) or {}).get("phone", "")
+        if not phone or str(phone).strip().upper() == "N/A":
+            continue
+
+        phone_text = str(phone).strip()
+        if not phone_text.startswith("+"):
+            continue
+
+        try:
+            parsed = phonenumbers.parse(phone_text, None)
+            if phonenumbers.is_valid_number(parsed):
+                return phonenumbers.region_code_for_number(parsed)
+        except NumberParseException:
+            continue
+
+    local_phones = []
+    for platform in NAP_PLATFORMS:
+        phone = (platform_nap.get(platform) or {}).get("phone", "")
+        if not phone or str(phone).strip().upper() == "N/A":
+            continue
+        phone_text = str(phone).strip()
+        if not phone_text.startswith("+"):
+            local_phones.append(phone_text)
+
+    if not local_phones:
+        return None
+
+    for region in FALLBACK_PHONE_REGIONS:
+        normalized = []
+        for phone in local_phones:
+            try:
+                parsed = phonenumbers.parse(phone, region)
+                if not phonenumbers.is_valid_number(parsed):
+                    break
+                normalized.append(str(parsed.national_number))
+            except NumberParseException:
+                break
+        else:
+            if normalized and len(set(normalized)) == 1:
+                return region
+
+    return None
+
+
+def _normalize_phone(phone: str, region: str | None = None) -> str:
     if not phone or str(phone).strip().upper() == "N/A":
         return ""
-    digits = re.sub(r"\D", "", str(phone))
-    if digits.startswith("44") and len(digits) > 10:
-        digits = digits[2:]
-    if digits.startswith("0"):
-        digits = digits[1:]
-    return digits
+
+    phone_text = str(phone).strip()
+
+    if phone_text.startswith("+"):
+        try:
+            parsed = phonenumbers.parse(phone_text, None)
+            if phonenumbers.is_valid_number(parsed):
+                return str(parsed.national_number)
+        except NumberParseException:
+            pass
+        return ""
+
+    if region:
+        try:
+            parsed = phonenumbers.parse(phone_text, region)
+            if phonenumbers.is_valid_number(parsed):
+                return str(parsed.national_number)
+        except NumberParseException:
+            pass
+
+    return ""
 
 
 def _normalize_address(address: str) -> str:
@@ -493,11 +558,12 @@ def check_nap_consistency(
         platform: _extract_platform_nap(scraped_data, platform)
         for platform in NAP_PLATFORMS
     }
+    phone_region = _detect_region_from_phones(platform_nap)
     normalized = {
         platform: {
             "name": _normalize_business_name(nap["name"]),
             "address": _normalize_address(nap["address"]),
-            "phone": _normalize_phone(nap["phone"]),
+            "phone": _normalize_phone(nap["phone"], region=phone_region),
         }
         for platform, nap in platform_nap.items()
     }
@@ -537,11 +603,13 @@ def check_nap_consistency(
     logger.info(
         "technical_foundation: NAP consistency check completed — "
         f"score={score}/{MAX_NAP_CONSISTENCY_SCORE}, consistent={consistent}, "
+        f"phone_region={phone_region}, "
         f"name_match={name_match}, address_match={address_match}, phone_match={phone_match}"
     )
 
     print(f"\nNAP Consistency Score: {score}/{MAX_NAP_CONSISTENCY_SCORE}\n")
     print(f"  Consistent : {consistent}")
+    print(f"  Phone region: {phone_region or 'N/A'}")
     print(f"  Message    : {message}\n")
     for platform in NAP_PLATFORMS:
         raw = platform_nap[platform]
