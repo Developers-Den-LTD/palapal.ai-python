@@ -22,6 +22,6 @@ models/
 
 *DDI_score
 
-llms_txt_output/
+llms_txt_outputs/
 
 review_replies/

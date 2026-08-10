@@ -31,5 +31,5 @@ def review_reply(
     background_tasks.add_task(run_review_reply, payload)
 
     return {
-        "message": "Review reply generation has started. Please allow 1–2 minutes for the process to complete."
+        "message": "Review reply generation has started. Please refresh the page in a few moments to view the results."
     }

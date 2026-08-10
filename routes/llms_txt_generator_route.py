@@ -8,6 +8,8 @@ Two modes:
   - With webhook_url: return 202 immediately, run in background, POST result to webhook.
 """
 
+import json
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from fastapi.responses import JSONResponse
 
@@ -46,17 +48,25 @@ async def _run_crawl_website_urls_and_notify(payload: LlmsTxtCrawlRequest) -> No
             f"website='{result['website_url']}', "
             f"url_count={result['url_count']}"
         )
+        logger.info(
+            "llms_txt_generator background crawl: webhook payload — "
+            f"url='{webhook_url}', "
+            f"body={json.dumps(result, ensure_ascii=False, default=str)}"
+        )
         await post_to_webhook(webhook_url, result)
     except Exception as exc:
         logger.exception(f"llms_txt_generator background crawl: failed — {exc}")
-        await post_to_webhook(
-            webhook_url,
-            {
-                "status": "error",
-                "message": str(exc),
-                "website_url": payload.website_url,
-            },
+        error_payload = {
+            "status": "error",
+            "message": str(exc),
+            "website_url": payload.website_url,
+        }
+        logger.info(
+            "llms_txt_generator background crawl: webhook payload — "
+            f"url='{webhook_url}', "
+            f"body={json.dumps(error_payload, ensure_ascii=False, default=str)}"
         )
+        await post_to_webhook(webhook_url, error_payload)
 
 
 async def _run_llms_txt_generation_and_notify(payload: LlmsTxtGeneratorRequest) -> None:
