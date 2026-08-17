@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI, Depends
 from routes import home_route, url_finder_route, scrapper, AI_visibility, Review_Velocity, technical_foundation, ddi_score_route
-from routes import pending_responses, all_responses, logs_router, Action_Cards_route, llms_txt_generator_route, Review_Reply
+from routes import pending_responses, all_responses, logs_router, Action_Cards_route, llms_txt_generator_route, Review_Reply, socialmedia_scrape_route
 from services.model_loader import load_sentiment_model
 from utils.auth_utils import verify_secret_key
 
@@ -24,6 +24,7 @@ application.include_router(logs_router.router, dependencies=[Depends(verify_secr
 application.include_router(Action_Cards_route.router, dependencies=[Depends(verify_secret_key)])
 application.include_router(llms_txt_generator_route.router, dependencies=[Depends(verify_secret_key)])
 application.include_router(Review_Reply.router, dependencies=[Depends(verify_secret_key)])
+application.include_router(socialmedia_scrape_route.router, dependencies=[Depends(verify_secret_key)])
 
 
 if __name__ == "__main__":

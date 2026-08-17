@@ -25,3 +25,5 @@ models/
 llms_txt_outputs/
 
 review_replies/
+
+socialmedia/
