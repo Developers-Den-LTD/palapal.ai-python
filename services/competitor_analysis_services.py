@@ -18,6 +18,8 @@ DEFAULT_MAX_SCORES = {
     "nap_consistency": 6,
 }
 
+TECH_KEYS = ("pagespeed", "llms_txt", "json_ld", "nap_consistency")
+
 
 def _fetch_one(business_id: str) -> tuple[str, dict | None]:
     result = fetch_ddi_score_by_business_id(business_id)
@@ -53,7 +55,7 @@ def _summarize(ddi_result: dict) -> dict:
         "exposure_fairness": _extract_score(
             ai, "exposure_fairness", default_max=DEFAULT_MAX_SCORES["exposure_fairness"]
         ),
-        "sentiment_analysis": _extract_score(
+        "sentiment_analysis": (ai.get("sentiment_analysis") or {}) if isinstance(ai.get("sentiment_analysis"), dict) else _extract_score(
             ai, "sentiment_analysis", default_max=DEFAULT_MAX_SCORES["sentiment_analysis"]
         ),
         "review_velocity": _extract_score(
@@ -78,6 +80,163 @@ def _summarize(ddi_result: dict) -> dict:
             technical, "nap_consistency", default_max=DEFAULT_MAX_SCORES["nap_consistency"]
         ),
     }
+
+
+def _pct(entry: dict, key: str) -> float:
+    """Return score as a 0–100 percentage for a given key in a summarized entry."""
+    block = entry.get(key) or {}
+    score = float(block.get("score") or 0)
+    max_score = float(block.get("max_score") or DEFAULT_MAX_SCORES.get(key) or 1)
+    return round((score / max_score) * 100, 1) if max_score else 0.0
+
+
+def _severity(your_pct: float, best_pct: float) -> str:
+    diff = best_pct - your_pct
+    if diff <= 0:
+        return "success"
+    if diff <= 20:
+        return "warning"
+    return "danger"
+
+
+def _generate_insights(your_id: str, your_entry: dict, competitors: dict) -> list[dict]:
+    """
+    Generate three competitive insights:
+      1. Market Dominance  — based on citation_score
+      2. Sentiment Leader  — based on sentiment_analysis + response_rate
+      3. Technical Opportunity — based on pagespeed + llms_txt + json_ld + nap_consistency
+    """
+    valid_competitors = {
+        cid: data
+        for cid, data in competitors.items()
+        if data.get("status") != "not_found"
+    }
+    insights: list[dict] = []
+
+    # ── 1. Market Dominance (citation_score) ──────────────────────────────────
+    your_citation = _pct(your_entry, "citation_score")
+
+    if valid_competitors:
+        best_cid = max(valid_competitors, key=lambda cid: _pct(valid_competitors[cid], "citation_score"))
+        best_citation = _pct(valid_competitors[best_cid], "citation_score")
+        diff = round(best_citation - your_citation, 1)
+
+        your_exposure = _pct(your_entry, "exposure_fairness")
+        best_exposure = _pct(valid_competitors[best_cid], "exposure_fairness")
+
+        if diff > 0:
+            message = (
+                f"A competitor appears {diff}% more often than you in AI search results. "
+                f"Key strength: Higher citation score ({best_citation}% vs {your_citation}%). "
+                f"Exposure fairness: you {your_exposure}% vs competitor {best_exposure}%."
+            )
+        else:
+            message = (
+                f"You lead in market visibility with a citation score of {your_citation}%. "
+                f"Best competitor is at {best_citation}%. "
+                f"Maintain this advantage by keeping your AI presence consistent."
+            )
+    else:
+        diff = 0.0
+        best_citation = 0.0
+        message = f"Your citation score is {your_citation}%. No competitor data available for comparison."
+
+    insights.append({
+        "type": "market_dominance",
+        "title": "Market Dominance",
+        "severity": _severity(your_citation, best_citation),
+        "message": message,
+    })
+
+    # ── 2. Sentiment Leader (sentiment_analysis + response_rate) ──────────────
+    your_sentiment = _pct(your_entry, "sentiment_analysis")
+    your_response = _pct(your_entry, "response_rate")
+
+    if valid_competitors:
+        best_sentiment_cid = max(
+            valid_competitors,
+            key=lambda cid: _pct(valid_competitors[cid], "sentiment_analysis"),
+        )
+        best_sentiment = _pct(valid_competitors[best_sentiment_cid], "sentiment_analysis")
+        best_response = _pct(valid_competitors[best_sentiment_cid], "response_rate")
+
+        sentiment_diff = round(best_sentiment - your_sentiment, 1)
+
+        if sentiment_diff > 0:
+            sentiment_line = (
+                f"Your sentiment score is competitive ({your_sentiment}% positive) "
+                f"but a competitor leads at {best_sentiment}%."
+            )
+        else:
+            sentiment_line = (
+                f"You lead in sentiment with {your_sentiment}% positive, "
+                f"ahead of the best competitor at {best_sentiment}%."
+            )
+
+        if your_response == 0 and best_response == 0:
+            response_line = "Response rate is 0% for you and all competitors — a first-mover opportunity to stand out."
+        elif your_response < best_response:
+            response_line = f"Focus on improving your response rate ({your_response}% vs competitor {best_response}%)."
+        else:
+            response_line = f"Your response rate ({your_response}%) is ahead of competitors ({best_response}%)."
+    else:
+        best_sentiment = 0.0
+        sentiment_line = f"Your sentiment score is {your_sentiment}% positive."
+        response_line = "No competitor data available for response rate comparison."
+
+    insights.append({
+        "type": "sentiment_leader",
+        "title": "Sentiment Leader",
+        "severity": _severity(your_sentiment, best_sentiment),
+        "message": f"{sentiment_line} {response_line}",
+    })
+
+    # ── 3. Technical Opportunity (pagespeed + llms_txt + json_ld + nap_consistency) ──
+    def _tech_pct(entry: dict) -> float:
+        total_score = sum(float((entry.get(k) or {}).get("score") or 0) for k in TECH_KEYS)
+        total_max = sum(float((entry.get(k) or {}).get("max_score") or DEFAULT_MAX_SCORES[k]) for k in TECH_KEYS)
+        return round((total_score / total_max) * 100, 1) if total_max else 0.0
+
+    your_tech = _tech_pct(your_entry)
+
+    if valid_competitors:
+        comp_tech_pcts = [_tech_pct(data) for data in valid_competitors.values()]
+        avg_comp_tech = round(sum(comp_tech_pcts) / len(comp_tech_pcts), 1)
+        best_comp_tech = max(comp_tech_pcts)
+
+        if your_tech < avg_comp_tech:
+            tech_line = (
+                f"Your technical score is {your_tech}%; competitors average {avg_comp_tech}%. "
+                "Improving your technical foundation will close this gap."
+            )
+        else:
+            tech_line = (
+                f"Your technical score is {your_tech}%, ahead of the competitor average of {avg_comp_tech}%. "
+                "Keep investing in technical improvements."
+            )
+
+        # Call out zero scores across the board as first-mover opportunities
+        zero_for_all = [
+            k for k in TECH_KEYS
+            if _pct(your_entry, k) == 0
+            and all(_pct(data, k) == 0 for data in valid_competitors.values())
+        ]
+        if zero_for_all:
+            keys_str = ", ".join(zero_for_all)
+            tech_line += f" First-mover opportunity: {keys_str} is 0% for everyone."
+    else:
+        avg_comp_tech = 0.0
+        best_comp_tech = 0.0
+        tech_line = f"Your technical score is {your_tech}%. No competitor data available."
+
+    insights.append({
+        "type": "technical_opportunity",
+        "title": "Technical Opportunity",
+        "severity": _severity(your_tech, avg_comp_tech),
+        "message": tech_line,
+    })
+
+    return insights
 
 
 def get_competitor_analysis(
@@ -108,7 +267,10 @@ def get_competitor_analysis(
             }
         return _summarize(data)
 
+    your_entry = _build_entry(business_id)
     competitors_result = {cid: _build_entry(cid) for cid in competitor_ids}
+
+    insights = _generate_insights(business_id, your_entry, competitors_result)
 
     logger.info(
         f"competitor_analysis: completed — "
@@ -117,6 +279,7 @@ def get_competitor_analysis(
     )
 
     return {
-        business_id: _build_entry(business_id),
+        business_id: your_entry,
         "competitors": competitors_result,
+        "insights": insights,
     }
