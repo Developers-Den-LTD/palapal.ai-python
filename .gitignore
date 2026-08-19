@@ -22,8 +22,12 @@ models/
 
 *DDI_score
 
+Video_Studio/
+
 llms_txt_outputs/
 
 review_replies/
+
+images/
 
 socialmedia/

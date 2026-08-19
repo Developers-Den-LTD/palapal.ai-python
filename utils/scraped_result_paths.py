@@ -10,6 +10,9 @@ LLMS_TXT_OUTPUT_BASE_PATH = BASE_DIR / "llms_txt_outputs"
 LLMS_TXT_FILENAME = "llms.txt"
 LLMS_TXT_METADATA_FILENAME = "generation_metadata.json"
 REVIEW_REPLIES_BASE_PATH = BASE_DIR / "Review_Replies"
+VIDEO_STUDIO_BASE_PATH = BASE_DIR / "Video_Studio"
+VIDEO_STUDIO_VIDEO_FILENAME = "video.mp4"
+VIDEO_STUDIO_RESULT_FILENAME = "Result.json"
 
 
 def slugify_folder_name(name: str) -> str:
@@ -103,3 +106,25 @@ def get_review_replies_result_path(
 ) -> Path:
     folder_slug = build_scrape_storage_slug(business_name, business_id)
     return REVIEW_REPLIES_BASE_PATH / f"{folder_slug}.json"
+
+
+def get_video_studio_folder(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> Path:
+    folder_slug = build_scrape_storage_slug(business_name, business_id)
+    return VIDEO_STUDIO_BASE_PATH / folder_slug
+
+
+def get_video_studio_video_path(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> Path:
+    return get_video_studio_folder(business_name, business_id) / VIDEO_STUDIO_VIDEO_FILENAME
+
+
+def get_video_studio_result_path(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> Path:
+    return get_video_studio_folder(business_name, business_id) / VIDEO_STUDIO_RESULT_FILENAME
