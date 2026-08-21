@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from services.ai_provider_services import PROVIDER_MODELS
 from services.logger_services import logger
 from services.s3_service import fetch_ddi_score_by_business_id
 
@@ -20,10 +21,183 @@ DEFAULT_MAX_SCORES = {
 
 TECH_KEYS = ("pagespeed", "llms_txt", "json_ld", "nap_consistency")
 
+# Short badges for the head-to-head UI (G / O / A / P).
+ENGINE_BADGES = {
+    "gemini": "G",
+    "openai": "O",
+    "anthropic": "A",
+    "perplexity": "P",
+}
+ENGINE_ORDER = tuple(PROVIDER_MODELS.keys())
+
 
 def _fetch_one(business_id: str) -> tuple[str, dict | None]:
     result = fetch_ddi_score_by_business_id(business_id)
     return business_id, result
+
+
+def _normalize_name_for_match(text: str) -> str:
+    text = text.lower().strip()
+    for ch in ("'", "'", "`", "´"):
+        text = text.replace(ch, "")
+    return text
+
+
+def _business_name_mentioned(business_name: str, text: str) -> bool:
+    normalized_name = _normalize_name_for_match(business_name)
+    if not normalized_name:
+        return False
+    return normalized_name in _normalize_name_for_match(text)
+
+
+def _resolve_business_name(ddi_result: dict | None, business_id: str) -> str:
+    if not isinstance(ddi_result, dict):
+        return business_id
+    name = str(ddi_result.get("business_name") or "").strip()
+    if name:
+        return name
+    ai = ddi_result.get("ai_visibility") or {}
+    if isinstance(ai, dict):
+        name = str(ai.get("business_name") or "").strip()
+        if name:
+            return name
+    return business_id
+
+
+def _provider_answers_for_question(provider_result: dict, question_number: int) -> list[str]:
+    if not isinstance(provider_result, dict):
+        return []
+    for item in provider_result.get("answers") or []:
+        if not isinstance(item, dict):
+            continue
+        if int(item.get("question_number") or 0) == question_number:
+            businesses = item.get("businesses") or []
+            return [str(name) for name in businesses if str(name).strip()]
+    return []
+
+
+def _mention_position(business_name: str, businesses: list[str]) -> int | None:
+    for index, name in enumerate(businesses, start=1):
+        if _business_name_mentioned(business_name, name):
+            return index
+    return None
+
+
+def _build_head_to_head_queries(
+    primary_id: str,
+    competitor_ids: list[str],
+    fetched: dict[str, dict | None],
+) -> list[dict]:
+    """
+    Build UI-ready head-to-head rankings from the primary business's AI visibility
+    answers. For each question, count how many of the 4 engines mention you and
+    each competitor (e.g. \"3/4 engines\").
+    """
+    primary_ddi = fetched.get(primary_id)
+    if not isinstance(primary_ddi, dict):
+        return []
+
+    ai = primary_ddi.get("ai_visibility") or {}
+    if not isinstance(ai, dict) or ai.get("status") == "error":
+        return []
+
+    questions = ai.get("questions") or []
+    answers = ai.get("answers") or {}
+    if not isinstance(questions, list) or not questions or not isinstance(answers, dict):
+        return []
+
+    participants: list[dict] = [
+        {
+            "business_id": primary_id,
+            "business_name": _resolve_business_name(primary_ddi, primary_id),
+            "role": "you",
+        }
+    ]
+    for competitor_id in competitor_ids:
+        competitor_ddi = fetched.get(competitor_id)
+        participants.append(
+            {
+                "business_id": competitor_id,
+                "business_name": _resolve_business_name(competitor_ddi, competitor_id),
+                "role": "competitor",
+            }
+        )
+
+    total_engines = len(ENGINE_ORDER)
+    head_to_head: list[dict] = []
+
+    for question_number, question in enumerate(questions, start=1):
+        query_text = str(question).strip()
+        if not query_text:
+            continue
+
+        provider_lists: dict[str, list[str]] = {
+            provider: _provider_answers_for_question(answers.get(provider) or {}, question_number)
+            for provider in ENGINE_ORDER
+        }
+
+        rankings: list[dict] = []
+        for participant in participants:
+            engine_hits: dict[str, bool] = {}
+            engine_badges: dict[str, bool] = {}
+            positions: list[int] = []
+
+            for provider in ENGINE_ORDER:
+                position = _mention_position(
+                    participant["business_name"],
+                    provider_lists[provider],
+                )
+                mentioned = position is not None
+                engine_hits[provider] = mentioned
+                engine_badges[ENGINE_BADGES.get(provider, provider[:1].upper())] = mentioned
+                if position is not None:
+                    positions.append(position)
+
+            engines_mentioned = sum(1 for hit in engine_hits.values() if hit)
+            average_position = (
+                round(sum(positions) / len(positions), 1) if positions else None
+            )
+            rankings.append(
+                {
+                    "business_id": participant["business_id"],
+                    "business_name": participant["business_name"],
+                    "role": participant["role"],
+                    "engines_mentioned": engines_mentioned,
+                    "engines_total": total_engines,
+                    "engines_label": f"{engines_mentioned}/{total_engines} engines",
+                    "engine_hits": engine_hits,
+                    "engine_badges": engine_badges,
+                    "average_position": average_position,
+                }
+            )
+
+        rankings.sort(
+            key=lambda row: (
+                -int(row["engines_mentioned"]),
+                float(row["average_position"])
+                if row["average_position"] is not None
+                else 999.0,
+                str(row["business_name"]).lower(),
+            )
+        )
+        for rank, row in enumerate(rankings, start=1):
+            row["rank"] = rank
+
+        head_to_head.append(
+            {
+                "question_number": question_number,
+                "query": query_text,
+                "total_engines": total_engines,
+                "engines": list(ENGINE_ORDER),
+                "engine_badges": {
+                    provider: ENGINE_BADGES.get(provider, provider[:1].upper())
+                    for provider in ENGINE_ORDER
+                },
+                "rankings": rankings,
+            }
+        )
+
+    return head_to_head
 
 
 def _extract_score(section: dict | None, *keys: str, default_max: float) -> dict:
@@ -271,15 +445,22 @@ def get_competitor_analysis(
     competitors_result = {cid: _build_entry(cid) for cid in competitor_ids}
 
     insights = _generate_insights(business_id, your_entry, competitors_result)
+    head_to_head_queries = _build_head_to_head_queries(
+        business_id,
+        competitor_ids,
+        fetched,
+    )
 
     logger.info(
         f"competitor_analysis: completed — "
         f"business_id='{business_id}', "
-        f"competitors_found={sum(1 for v in competitors_result.values() if v.get('status') != 'not_found')}"
+        f"competitors_found={sum(1 for v in competitors_result.values() if v.get('status') != 'not_found')}, "
+        f"head_to_head_queries={len(head_to_head_queries)}"
     )
 
     return {
         business_id: your_entry,
         "competitors": competitors_result,
         "insights": insights,
+        "head_to_head_queries": head_to_head_queries,
     }

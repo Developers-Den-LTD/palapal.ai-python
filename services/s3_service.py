@@ -13,8 +13,6 @@ from utils.scraped_result_paths import (
     get_ddi_score_result_path,
     get_review_replies_result_path,
     get_scraped_result_path,
-    get_video_studio_result_path,
-    get_video_studio_video_path,
 )
 
 S3_KEY_PREFIX = "scraping_results"
@@ -22,10 +20,6 @@ SCRAPED_RESULT_FILENAME = "scraped_result.json"
 DDI_SCORE_KEY_PREFIX = "DDI_score"
 DDI_SCORE_RESULT_FILENAME = "Result.json"
 REVIEW_REPLIES_KEY_PREFIX = "Review_Replies"
-VIDEO_STUDIO_KEY_PREFIX = "Video_Studio"
-VIDEO_STUDIO_VIDEO_FILENAME = "video.mp4"
-VIDEO_STUDIO_RESULT_FILENAME = "Result.json"
-VIDEO_PRESIGNED_EXPIRES_SECONDS = 7 * 24 * 60 * 60
 
 
 def _get_s3_client():
@@ -57,123 +51,6 @@ def get_review_replies_s3_key(
 ) -> str:
     folder_slug = build_scrape_storage_slug(business_name, business_id)
     return f"{REVIEW_REPLIES_KEY_PREFIX}/{folder_slug}"
-
-
-def get_video_studio_prefix(
-    business_name: str,
-    business_id: str | int | None = None,
-) -> str:
-    folder_slug = build_scrape_storage_slug(business_name, business_id)
-    return f"{VIDEO_STUDIO_KEY_PREFIX}/{folder_slug}"
-
-
-def get_video_studio_video_s3_key(
-    business_name: str,
-    business_id: str | int | None = None,
-) -> str:
-    return f"{get_video_studio_prefix(business_name, business_id)}/{VIDEO_STUDIO_VIDEO_FILENAME}"
-
-
-def get_video_studio_result_s3_key(
-    business_name: str,
-    business_id: str | int | None = None,
-) -> str:
-    return f"{get_video_studio_prefix(business_name, business_id)}/{VIDEO_STUDIO_RESULT_FILENAME}"
-
-
-def upload_bytes_to_s3(*, s3_key: str, body: bytes, content_type: str) -> bool:
-    try:
-        _get_s3_client().put_object(
-            Bucket=settings.AWS_S3_BUCKET,
-            Key=s3_key,
-            Body=body,
-            ContentType=content_type,
-        )
-        logger.info(
-            f"s3_service: bytes upload completed successfully — "
-            f"bucket={settings.AWS_S3_BUCKET}, key={s3_key}"
-        )
-        return True
-    except ClientError as exc:
-        logger.error(f"s3_service: bytes upload failed for key={s3_key} — {exc}")
-        return False
-    except NoCredentialsError as exc:
-        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
-        return False
-    except Exception as exc:
-        logger.error(f"s3_service: unexpected bytes upload error for key={s3_key} — {exc}")
-        return False
-
-
-def generate_presigned_url(s3_key: str, expires_in: int = VIDEO_PRESIGNED_EXPIRES_SECONDS) -> str | None:
-    try:
-        url = _get_s3_client().generate_presigned_url(
-            "get_object",
-            Params={"Bucket": settings.AWS_S3_BUCKET, "Key": s3_key},
-            ExpiresIn=expires_in,
-        )
-        logger.info(f"s3_service: generated presigned URL — key={s3_key}")
-        return url
-    except ClientError as exc:
-        logger.error(f"s3_service: failed to generate presigned URL for key={s3_key} — {exc}")
-        return None
-    except NoCredentialsError as exc:
-        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
-        return None
-    except Exception as exc:
-        logger.error(
-            f"s3_service: unexpected presigned URL error for key={s3_key} — {exc}"
-        )
-        return None
-
-
-def upload_video_studio_files_to_s3(
-    business_name: str,
-    *,
-    video_bytes: bytes | None,
-    result: dict,
-    business_id: str | int | None = None,
-) -> dict:
-    """
-    Upload Video Studio outputs to:
-      Video_Studio/<business_slug>[_business_id]/video.mp4
-      Video_Studio/<business_slug>[_business_id]/Result.json
-    """
-    video_key = get_video_studio_video_s3_key(business_name, business_id)
-    result_key = get_video_studio_result_s3_key(business_name, business_id)
-    uploaded = {"video": False, "result": False, "video_url": None}
-
-    local_video_path = get_video_studio_video_path(business_name, business_id)
-    local_result_path = get_video_studio_result_path(business_name, business_id)
-    local_video_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if video_bytes:
-        try:
-            local_video_path.write_bytes(video_bytes)
-        except OSError as exc:
-            logger.error(f"s3_service: failed to write local video — {exc}")
-        uploaded["video"] = upload_bytes_to_s3(
-            s3_key=video_key,
-            body=video_bytes,
-            content_type="video/mp4",
-        )
-        if uploaded["video"]:
-            uploaded["video_url"] = generate_presigned_url(video_key)
-
-    result["video_s3_key"] = video_key
-    result["result_s3_key"] = result_key
-    result["video_url"] = uploaded["video_url"]
-
-    try:
-        local_result_path.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        logger.error(f"s3_service: failed to write local video result JSON — {exc}")
-
-    uploaded["result"] = upload_json_to_s3(s3_key=result_key, data=result)
-    return uploaded
 
 
 def upload_json_to_s3(*, s3_key: str, data: dict) -> bool:
