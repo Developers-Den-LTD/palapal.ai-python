@@ -1,5 +1,6 @@
 import json
 
+from services.ai_provider_services import PROVIDER_MODELS
 from services.logger_services import logger
 from services.s3_service import (
     ddi_score_exists_in_s3,
@@ -7,6 +8,8 @@ from services.s3_service import (
     get_ddi_score_s3_key,
 )
 from utils.scraped_result_paths import build_scrape_storage_slug, get_ddi_score_result_path
+
+_DEFAULT_TOTAL_AI_ANSWERS = 10 * len(PROVIDER_MODELS)
 
 
 def _load_local_ddi_score(business_name: str, local_path) -> dict:
@@ -51,7 +54,7 @@ def _with_diy_tip(card: dict, diy_tip: str | None) -> dict:
 def _format_citation_card(data: dict | None) -> dict:
     data = data or {}
     mentions = data.get("mentions", 0)
-    total = data.get("total_answers") or data.get("total_questions", 40)
+    total = data.get("total_answers") or data.get("total_questions") or _DEFAULT_TOTAL_AI_ANSWERS
     message = f"{mentions} AI mentioned out of {total}"
     percentage = data.get("percentage")
     if percentage is None:

@@ -19,6 +19,10 @@ PROVIDER_MODEL_FALLBACKS = {
         "claude-sonnet-4-6",
     ],
     "perplexity": ["sonar"],
+    "llama": [
+        "meta-llama/llama-3.3-70b-instruct",
+        "meta-llama/llama-3.1-70b-instruct",
+    ],
 }
 
 PROVIDER_MODELS = {
@@ -167,11 +171,34 @@ def _fetch_perplexity(prompt: str, model: str) -> str:
     return response.choices[0].message.content or ""
 
 
+def _fetch_llama(prompt: str, model: str) -> str:
+    client = OpenAI(
+        api_key=settings.OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={
+            "HTTP-Referer": "https://palapal.ai",
+            "X-Title": "Palapalai",
+        },
+    )
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a local business recommendation assistant.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+    )
+    return response.choices[0].message.content or ""
+
+
 PROVIDER_FETCHERS = {
     "openai": _fetch_openai,
     "gemini": _fetch_gemini,
     "anthropic": _fetch_anthropic,
     "perplexity": _fetch_perplexity,
+    "llama": _fetch_llama,
 }
 
 

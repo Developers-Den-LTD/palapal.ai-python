@@ -21,12 +21,13 @@ DEFAULT_MAX_SCORES = {
 
 TECH_KEYS = ("pagespeed", "llms_txt", "json_ld", "nap_consistency")
 
-# Short badges for the head-to-head UI (G / O / A / P).
+# Short badges for the head-to-head UI (G / O / A / P / L).
 ENGINE_BADGES = {
     "gemini": "G",
     "openai": "O",
     "anthropic": "A",
     "perplexity": "P",
+    "llama": "L",
 }
 ENGINE_ORDER = tuple(PROVIDER_MODELS.keys())
 
@@ -90,8 +91,8 @@ def _build_head_to_head_queries(
 ) -> list[dict]:
     """
     Build UI-ready head-to-head rankings from the primary business's AI visibility
-    answers. For each question, count how many of the 4 engines mention you and
-    each competitor (e.g. \"3/4 engines\").
+    answers. For each question, count how many engines mention you and
+    each competitor (e.g. \"3/5 engines\").
     """
     primary_ddi = fetched.get(primary_id)
     if not isinstance(primary_ddi, dict):
