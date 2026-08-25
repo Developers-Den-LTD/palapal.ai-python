@@ -12,7 +12,7 @@ def home():
     
     return {
         "message": "Palapalai is working perfectly!",
-        "version": "1.0.2",
+        "version": "2.0.0",
         "status": "success"
     }
 
