@@ -83,3 +83,4 @@ class SocialMediaConsistencyRequest(BaseModel):
                 "At least one of instagram, facebook, or twitter is required"
             )
         return self
+

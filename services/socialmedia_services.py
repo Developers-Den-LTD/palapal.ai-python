@@ -68,6 +68,7 @@ def resolve_storage_slug(payload: SocialMediaRequest) -> str:
     """Use Instagram username first, then Facebook page slug, then Twitter handle."""
     return resolve_platform_handles(payload).storage_slug_name
 
+
 def get_social_media_result_path(
     business_name: str,
     business_id: str | int | None = None,
@@ -98,7 +99,8 @@ async def scrape_social_media(
     handles: SocialMediaScrapeContext,
 ) -> dict:
     storage_slug = handles.storage_slug_name
-    logger.info(        "socialmedia: starting combined scrape — "
+    logger.info(
+        "socialmedia: starting combined scrape — "
         f"storage_slug='{storage_slug}', business_id='{payload.business_id}', "
         f"posts_limit={payload.posts_limit}, "
         f"instagram={'yes' if payload.instagram_url else 'no'}, "

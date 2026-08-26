@@ -1,6 +1,9 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 
-from schema.socialmedia_schema import SocialMediaConsistencyRequest, SocialMediaRequest
+from schema.socialmedia_schema import (
+    SocialMediaConsistencyRequest,
+    SocialMediaRequest,
+)
 from services.logger_services import logger
 from services.social_media_scrapper.consistency import check_social_media_consistency
 from services.socialmedia_services import (
@@ -166,3 +169,5 @@ async def socialmedia_consistency(payload: SocialMediaConsistencyRequest):
         "business_id": str(payload.business_id) if payload.business_id is not None else None,
         **consistency,
     }
+
+
