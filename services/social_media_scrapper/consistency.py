@@ -37,10 +37,7 @@ def _raw_name_value(platform: str, platform_data: dict | None) -> str | None:
         return ((platform_data.get("profile") or {}).get("name") or "").strip() or None
 
     if platform == "twitter":
-        username = ((platform_data.get("profile") or {}).get("username") or "").strip()
-        if not username:
-            username = (platform_data.get("username") or "").strip()
-        return username or None
+        return ((platform_data.get("profile") or {}).get("name") or "").strip() or None
 
     return None
 

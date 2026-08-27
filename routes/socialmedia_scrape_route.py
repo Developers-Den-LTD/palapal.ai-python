@@ -123,7 +123,7 @@ async def socialmedia_consistency(payload: SocialMediaConsistencyRequest):
     Send the instagram / facebook / twitter blocks from a scrape result.
     The full saved JSON can be posted as-is — extra fields are ignored.
 
-    Name:   Instagram profile.name (fallback username), Facebook profile.name, Twitter username
+    Name:   Instagram profile.name (fallback username), Facebook profile.name, Twitter profile.name
     Address: Instagram + Facebook profile.address
     Phone:  Instagram + Facebook contact.phones (normalized E.164 match)
     """
