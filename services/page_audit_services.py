@@ -1,13 +1,15 @@
 """
 Multi-page audit using Google PageSpeed (mobile + desktop).
 
-Max 10 PageSpeed calls at once (asyncio.Semaphore).
+Max 5 PageSpeed calls at once (asyncio.Semaphore).
+Retries timeouts, connection drops, and HTTP 500s.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 
@@ -18,7 +20,10 @@ from core.config import settings
 from services.logger_services import logger
 
 PAGESPEED_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
-MAX_WORKERS = 10
+MAX_WORKERS = 5
+PAGESPEED_TIMEOUT_SECONDS = 180.0
+PAGESPEED_MAX_ATTEMPTS = 3
+PAGESPEED_RETRY_BASE_DELAY_SECONDS = 2.0
 LCP_SLOW_SECONDS = 2.5
 STRATEGIES = ("mobile", "desktop")
 HTML_HEADERS = {
@@ -28,6 +33,12 @@ HTML_HEADERS = {
     )
 }
 MAX_INTERNAL_LINKS_TO_CHECK = 40
+# Transient failures worth retrying (timeouts, dropped connections, etc.).
+_PAGESPEED_RETRY_EXCEPTIONS = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
 
 
 def _normalize_page_url(url: str) -> tuple[str, str, str]:
@@ -84,11 +95,59 @@ def _empty_ps_result(error: str) -> dict:
     }
 
 
+def _parse_pagespeed_payload(data: dict) -> dict:
+    lighthouse = data.get("lighthouseResult", {})
+    audits = lighthouse.get("audits", {})
+    categories = lighthouse.get("categories", {})
+
+    lcp_audit = audits.get("largest-contentful-paint", {})
+    lcp = _parse_lcp_seconds(
+        numeric_value=lcp_audit.get("numericValue"),
+        display_value=lcp_audit.get("displayValue"),
+    )
+
+    missing_meta = audits.get("meta-description", {}).get("score") == 0
+    image_alt = audits.get("image-alt", {})
+    missing_alt_count = 0
+    if image_alt.get("score") == 0:
+        items = (image_alt.get("details") or {}).get("items") or []
+        missing_alt_count = len(items)
+
+    issues: list[str] = []
+    if lcp is not None and lcp > LCP_SLOW_SECONDS:
+        issues.append(f"Slow LCP ({lcp}s)")
+    if missing_meta:
+        issues.append("Missing meta description")
+    if missing_alt_count:
+        issues.append(f"{missing_alt_count} images missing alt text")
+
+    return {
+        "ok": True,
+        "error": None,
+        "performance": _score_100(categories.get("performance")),
+        "seo": _score_100(categories.get("seo")),
+        "accessibility": _score_100(categories.get("accessibility")),
+        "best_practices": _score_100(categories.get("best-practices")),
+        "lcp": lcp,
+        "missing_meta": missing_meta,
+        "missing_alt_count": missing_alt_count,
+        "issues": issues,
+    }
+
+
 def _pagespeed_request(url: str, strategy: str) -> dict:
-    try:
-        with httpx.Client(timeout=120.0) as client:
-            last_response = None
-            for attempt in range(1, 4):
+    """
+    Call Google PageSpeed with retries for:
+    - HTTP 500
+    - read/connect timeouts
+    - dropped / incomplete connections
+    """
+    last_error: Exception | None = None
+    last_status: int | str | None = None
+
+    with httpx.Client(timeout=PAGESPEED_TIMEOUT_SECONDS) as client:
+        for attempt in range(1, PAGESPEED_MAX_ATTEMPTS + 1):
+            try:
                 response = client.get(
                     PAGESPEED_ENDPOINT,
                     params=[
@@ -101,59 +160,62 @@ def _pagespeed_request(url: str, strategy: str) -> dict:
                         ("category", "best-practices"),
                     ],
                 )
-                last_response = response
-                if response.status_code != 500:
-                    break
-                logger.warning(
-                    f"page_audit: PageSpeed 500 for {url} ({strategy}), "
-                    f"attempt={attempt}/3"
+                last_status = response.status_code
+
+                if response.status_code == 500:
+                    if attempt < PAGESPEED_MAX_ATTEMPTS:
+                        delay = PAGESPEED_RETRY_BASE_DELAY_SECONDS * attempt
+                        logger.warning(
+                            f"page_audit: PageSpeed 500 for {url} ({strategy}), "
+                            f"attempt={attempt}/{PAGESPEED_MAX_ATTEMPTS}, "
+                            f"retrying in {delay}s"
+                        )
+                        time.sleep(delay)
+                        continue
+                    return _empty_ps_result(
+                        f"PageSpeed failed (status=500) after "
+                        f"{PAGESPEED_MAX_ATTEMPTS} attempts"
+                    )
+
+                if response.status_code != 200:
+                    return _empty_ps_result(
+                        f"PageSpeed failed (status={response.status_code})"
+                    )
+
+                return _parse_pagespeed_payload(response.json())
+
+            except _PAGESPEED_RETRY_EXCEPTIONS as exc:
+                last_error = exc
+                if attempt < PAGESPEED_MAX_ATTEMPTS:
+                    delay = PAGESPEED_RETRY_BASE_DELAY_SECONDS * attempt
+                    logger.warning(
+                        f"page_audit: PageSpeed transient error for {url} "
+                        f"({strategy}) — {exc}; "
+                        f"attempt={attempt}/{PAGESPEED_MAX_ATTEMPTS}, "
+                        f"retrying in {delay}s"
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.error(
+                    f"page_audit: PageSpeed failed after "
+                    f"{PAGESPEED_MAX_ATTEMPTS} attempts for {url} ({strategy}) — {exc}"
                 )
+                return _empty_ps_result(
+                    f"PageSpeed error after {PAGESPEED_MAX_ATTEMPTS} attempts: {exc}"
+                )
+            except Exception as exc:
+                logger.exception(
+                    f"page_audit: PageSpeed error for {url} ({strategy}) — {exc}"
+                )
+                return _empty_ps_result(f"PageSpeed error: {exc}")
 
-            if last_response is None or last_response.status_code != 200:
-                status = last_response.status_code if last_response else "no_response"
-                return _empty_ps_result(f"PageSpeed failed (status={status})")
-
-            data = last_response.json()
-            lighthouse = data.get("lighthouseResult", {})
-            audits = lighthouse.get("audits", {})
-            categories = lighthouse.get("categories", {})
-
-            lcp_audit = audits.get("largest-contentful-paint", {})
-            lcp = _parse_lcp_seconds(
-                numeric_value=lcp_audit.get("numericValue"),
-                display_value=lcp_audit.get("displayValue"),
-            )
-
-            missing_meta = audits.get("meta-description", {}).get("score") == 0
-            image_alt = audits.get("image-alt", {})
-            missing_alt_count = 0
-            if image_alt.get("score") == 0:
-                items = (image_alt.get("details") or {}).get("items") or []
-                missing_alt_count = len(items)
-
-            issues: list[str] = []
-            if lcp is not None and lcp > LCP_SLOW_SECONDS:
-                issues.append(f"Slow LCP ({lcp}s)")
-            if missing_meta:
-                issues.append("Missing meta description")
-            if missing_alt_count:
-                issues.append(f"{missing_alt_count} images missing alt text")
-
-            return {
-                "ok": True,
-                "error": None,
-                "performance": _score_100(categories.get("performance")),
-                "seo": _score_100(categories.get("seo")),
-                "accessibility": _score_100(categories.get("accessibility")),
-                "best_practices": _score_100(categories.get("best-practices")),
-                "lcp": lcp,
-                "missing_meta": missing_meta,
-                "missing_alt_count": missing_alt_count,
-                "issues": issues,
-            }
-    except Exception as exc:
-        logger.exception(f"page_audit: PageSpeed error for {url} ({strategy}) — {exc}")
-        return _empty_ps_result(f"PageSpeed error: {exc}")
+    if last_error is not None:
+        return _empty_ps_result(
+            f"PageSpeed error after {PAGESPEED_MAX_ATTEMPTS} attempts: {last_error}"
+        )
+    return _empty_ps_result(
+        f"PageSpeed failed (status={last_status or 'no_response'})"
+    )
 
 
 def _fetch_html(url: str) -> dict:
@@ -412,7 +474,7 @@ async def run_page_audit(urls: list[str]) -> dict:
             full = futures[future]
             html_by_url[full] = future.result()
 
-    # 2) PageSpeed mobile + desktop (max 10 at once)
+    # 2) PageSpeed mobile + desktop (max 5 at once)
     semaphore = asyncio.Semaphore(MAX_WORKERS)
 
     async def _run_ps(url: str, strategy: str) -> dict:
