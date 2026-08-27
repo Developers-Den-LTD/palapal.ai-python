@@ -5,7 +5,6 @@ from services.logger_services import logger
 from services.scrapper_services import _run_actor_with_retry
 from services.social_media_scrapper.common import (
     analyze_tone_of_voice,
-    extract_address_from_bio,
     list_actor_items,
     log_section,
     unique_strings,
@@ -13,6 +12,7 @@ from services.social_media_scrapper.common import (
 
 INSTAGRAM_PROFILE_ACTOR = "apify/instagram-scraper"
 INSTAGRAM_CONTACT_ACTOR = "seemuapps/instagram-contact-scraper"
+INSTAGRAM_ADDRESS_ACTOR = "goat255/instagram-profile-scraper"
 LOG_INSTAGRAM = "socialmedia [instagram]"
 
 _INVALID_INSTAGRAM_SEGMENTS = frozenset(
@@ -108,6 +108,33 @@ def _scrape_contacts(username: str) -> dict | None:
     return items[0] if items else None
 
 
+def _scrape_address(username: str) -> dict | None:
+    """Instagram: run goat255/instagram-profile-scraper for business address."""
+    logger.info(
+        f"{LOG_INSTAGRAM}: calling actor '{INSTAGRAM_ADDRESS_ACTOR}' "
+        f"username='{username}'"
+    )
+    run = _run_actor_with_retry(
+        INSTAGRAM_ADDRESS_ACTOR,
+        {
+            "usernames": [username],
+        },
+    )
+    items = list_actor_items(run)
+    logger.info(f"{LOG_INSTAGRAM}: address actor returned {len(items)} item(s)")
+    return items[0] if items else None
+
+
+def _combine_instagram_address(address_item: dict | None) -> str | None:
+    """Join street address and city, skipping empty parts."""
+    if not address_item:
+        return None
+    street = str(address_item.get("address") or "").strip()
+    city = str(address_item.get("city") or "").strip()
+    parts = [part for part in (street, city) if part]
+    return ", ".join(parts) if parts else None
+
+
 def _caption_from_post(post: dict) -> dict | None:
     caption = (post.get("caption") or "").strip()
     if not caption:
@@ -167,6 +194,7 @@ def _build_contact(contact_item: dict | None) -> dict:
 def _build_profile(
     profile_item: dict | None,
     contact_item: dict | None,
+    address_item: dict | None = None,
 ) -> dict:
     profile_item = profile_item or {}
     contact_item = contact_item or {}
@@ -176,7 +204,7 @@ def _build_profile(
         "name": profile_item.get("fullName"),
         "username": profile_item.get("username"),
         "biography": biography,
-        "address": extract_address_from_bio(biography),
+        "address": _combine_instagram_address(address_item),
         "is_business_account": profile_item.get("isBusinessAccount"),
         "business_category": profile_item.get("businessCategoryName"),
         "external_url": profile_item.get("externalUrl")
@@ -201,7 +229,10 @@ async def scrape_instagram(
 
     profile_task = asyncio.to_thread(_scrape_profile, instagram_url, posts_limit)
     contact_task = asyncio.to_thread(_scrape_contacts, username)
-    profile_item, contact_item = await asyncio.gather(profile_task, contact_task)
+    address_task = asyncio.to_thread(_scrape_address, username)
+    profile_item, contact_item, address_item = await asyncio.gather(
+        profile_task, contact_task, address_task
+    )
 
     captions = _extract_captions(profile_item, posts_limit)
     if not captions and posts_limit > 0:
@@ -220,7 +251,7 @@ async def scrape_instagram(
                 f"{LOG_INSTAGRAM}: posts fallback returned {len(captions)} caption(s)"
             )
 
-    profile = _build_profile(profile_item, contact_item)
+    profile = _build_profile(profile_item, contact_item, address_item)
     contact = _build_contact(contact_item)
 
     tone_texts = []
@@ -236,7 +267,7 @@ async def scrape_instagram(
 
     logger.info(
         f"{LOG_INSTAGRAM}: scrape complete — captions={len(captions)}, "
-        f"name='{profile.get('name')}'"
+        f"name='{profile.get('name')}', address='{profile.get('address')}'"
     )
 
     return {

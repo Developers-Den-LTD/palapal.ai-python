@@ -7,8 +7,6 @@ from services.logger_services import logger
 from services.social_media_scrapper.tone_analysis import build_tone_analysis
 from services.technical_foundation import (
     FALLBACK_PHONE_REGIONS,
-    _addresses_match,
-    _normalize_address,
 )
 
 LOG_TAG = "socialmedia [consistency]"
@@ -213,19 +211,29 @@ def _check_address_consistency(
         )
 
     present = {platform: address for platform, address in values.items() if address}
-    if not present:
+    if len(present) < 2:
         return _check_result(
             success=True,
             values=values,
+            normalized={},
             field_presence=presence,
-            message="No address found on Instagram or Facebook.",
+            message="Not enough platforms with address data to compare.",
         )
 
-    addresses = list(present.values())
-    normalized = {p: _normalize_address(a) for p, a in present.items()}
-    success = _addresses_match(addresses)
+    normalized = {platform: _normalize_name(address) for platform, address in present.items()}
+    if any(not value for value in normalized.values()):
+        return _check_result(
+            success=False,
+            values=values,
+            normalized=normalized,
+            field_presence=presence,
+            message="One or more platforms have an empty address after normalization.",
+        )
+
+    success = len(set(normalized.values())) == 1
     message = (
-        "Address is consistent between Instagram and Facebook."
+        "Address is an exact match across platforms after removing "
+        "spaces, commas, and punctuation."
         if success
         else "Address mismatch detected between Instagram and Facebook."
     )
@@ -428,17 +436,25 @@ def _build_name_response(values: dict[str, str]) -> dict:
 
 def _build_address_response(
     values: dict[str, str | None],
-    address_result: dict,
 ) -> dict:
+    present = {p: v for p, v in values.items() if v}
+    normalized = {p: _normalize_name(n) for p, n in present.items()}
     response: dict[str, dict] = {}
-    overall_ok = address_result["success"]
 
     for platform in ("instagram", "facebook"):
         raw = values.get(platform)
         if not raw:
             response[platform] = _platform_entry(consistent=False, value=None)
+            continue
+
+        norm = normalized[platform]
+        others = {p: v for p, v in normalized.items() if p != platform and v}
+        if not others:
+            consistent = True
         else:
-            response[platform] = _platform_entry(consistent=overall_ok, value=raw)
+            consistent = all(norm == other for other in others.values())
+
+        response[platform] = _platform_entry(consistent=consistent, value=raw)
 
     return response
 
@@ -524,7 +540,7 @@ async def check_social_media_consistency(scrape_result: dict) -> dict:
 
     return {
         "Name": _build_name_response(name_values),
-        "Address": _build_address_response(address_values, address_result),
+        "Address": _build_address_response(address_values),
         "Phone": _build_phone_response(phone_values, phone_result),
         "tone_analysis": tone_analysis,
     }
