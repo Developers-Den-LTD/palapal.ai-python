@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends  
+from fastapi import APIRouter  
 from services.logger_services import logger
 
 

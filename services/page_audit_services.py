@@ -446,6 +446,118 @@ def _build_site_issues(
     return site_issues
 
 
+def _avg(values: list[float]) -> float | None:
+    clean = [float(v) for v in values if v is not None]
+    if not clean:
+        return None
+    return sum(clean) / len(clean)
+
+
+def _build_overall_health(
+    pages_out: list[dict],
+    html_by_url: dict[str, dict],
+    broken_links: int,
+    sitemap_in_robots: bool,
+) -> dict:
+    """
+    Site-level health summary for the Overall Health dashboard.
+    Scores are 0-100 per category; overall is the average of all five.
+    """
+    total_pages = len(pages_out)
+    if total_pages == 0:
+        empty = {"score": 0, "max_score": 100}
+        breakdown = {
+            "schema_and_data": dict(empty),
+            "performance": dict(empty),
+            "mobile_friendly": dict(empty),
+            "security": dict(empty),
+            "content_quality": dict(empty),
+        }
+        return {
+            "score": 0,
+            "max_score": 100,
+            "percentage": 0,
+            "breakdown": breakdown,
+        }
+
+    perf_scores: list[float] = []
+    mobile_perf_scores: list[float] = []
+    mobile_a11y_scores: list[float] = []
+    security_scores: list[float] = []
+    seo_scores: list[float] = []
+
+    for page in pages_out:
+        for key in STRATEGIES:
+            block = page.get(key) or {}
+            if block.get("performance") is not None:
+                perf_scores.append(float(block["performance"]))
+            if block.get("best_practices") is not None:
+                security_scores.append(float(block["best_practices"]))
+            if block.get("seo") is not None:
+                seo_scores.append(float(block["seo"]))
+
+        mobile = page.get("mobile") or {}
+        if mobile.get("performance") is not None:
+            mobile_perf_scores.append(float(mobile["performance"]))
+        if mobile.get("accessibility") is not None:
+            mobile_a11y_scores.append(float(mobile["accessibility"]))
+
+    schema_pages = sum(1 for html in html_by_url.values() if html.get("schema"))
+    schema_pct = round((schema_pages / total_pages) * 100)
+    if not sitemap_in_robots:
+        schema_pct = max(0, schema_pct - 10)
+
+    performance = round(_avg(perf_scores) or 0)
+    mobile_perf = _avg(mobile_perf_scores)
+    mobile_a11y = _avg(mobile_a11y_scores)
+    if mobile_perf is not None and mobile_a11y is not None:
+        mobile_friendly = round((mobile_perf + mobile_a11y) / 2)
+    elif mobile_perf is not None:
+        mobile_friendly = round(mobile_perf)
+    elif mobile_a11y is not None:
+        mobile_friendly = round(mobile_a11y)
+    else:
+        mobile_friendly = 0
+
+    security = round(_avg(security_scores) or 0)
+
+    content_base = _avg(seo_scores) or 0.0
+    missing_meta_pages = sum(1 for page in pages_out if page.get("missing_meta"))
+    missing_alt_total = sum(int(page.get("missing_alt_count") or 0) for page in pages_out)
+    content_penalty = min(
+        40,
+        missing_meta_pages * 5 + min(missing_alt_total, 20) + broken_links * 2,
+    )
+    content_quality = max(0, round(content_base - content_penalty))
+
+    categories = {
+        "schema_and_data": schema_pct,
+        "performance": performance,
+        "mobile_friendly": mobile_friendly,
+        "security": security,
+        "content_quality": content_quality,
+    }
+    overall = round(sum(categories.values()) / len(categories))
+
+    logger.info(
+        "page_audit: overall_health — "
+        f"overall={overall}/100, "
+        f"schema_and_data={schema_pct}, performance={performance}, "
+        f"mobile_friendly={mobile_friendly}, security={security}, "
+        f"content_quality={content_quality}"
+    )
+
+    return {
+        "score": overall,
+        "max_score": 100,
+        "percentage": overall,
+        "breakdown": {
+            key: {"score": score, "max_score": 100}
+            for key, score in categories.items()
+        },
+    }
+
+
 async def run_page_audit(urls: list[str]) -> dict:
     page_entries: list[tuple[str, str, str]] = []
     seen = set()
@@ -564,13 +676,22 @@ async def run_page_audit(urls: list[str]) -> dict:
         for page in pages_out
     ]
 
+    overall_health = _build_overall_health(
+        pages_out,
+        html_by_url,
+        broken_links=broken_links,
+        sitemap_in_robots=sitemap_in_robots,
+    )
+
     logger.info(
         f"page_audit: done — pages={len(public_urls)}, "
-        f"site_issues={len(site_issues)}, broken_links={broken_links}"
+        f"site_issues={len(site_issues)}, broken_links={broken_links}, "
+        f"overall_health={overall_health['score']}/100"
     )
 
     return {
         "status": "success",
         "urls": public_urls,
         "issues": site_issues,
+        "overall_health": overall_health,
     }
