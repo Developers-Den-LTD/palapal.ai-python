@@ -33,7 +33,7 @@ from utils.scraped_result_paths import (
 )
 
 # Primary model for llms.txt generation.
-LLM_MODEL = "gpt-4o-mini"
+LLM_MODEL = "gpt-4.1-mini"
 LLM_MODEL_FALLBACKS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"]
 
 

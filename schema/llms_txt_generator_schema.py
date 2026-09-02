@@ -54,6 +54,10 @@ class LlmsTxtFromUrlsRequest(BaseModel):
         le=20,
         description="Number of pages to extract in parallel",
     )
+    webhook_url: HttpUrl = Field(
+        ...,
+        description="URL that receives the generation result via POST when processing completes",
+    )
 
 
 class LlmsTxtCrawlRequest(BaseModel):

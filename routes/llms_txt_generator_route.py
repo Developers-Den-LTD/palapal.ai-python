@@ -2,10 +2,11 @@
 API route for llms.txt generation.
 
 POST /api/generate-llms-txt
-
-Two modes:
   - No webhook_url: wait for full result and return it in the response (sync).
   - With webhook_url: return 202 immediately, run in background, POST result to webhook.
+
+POST /api/generate-llms-txt-from-urls
+  - webhook_url is required: return 202 immediately, run in background, POST result to webhook.
 """
 
 import json
@@ -143,36 +144,87 @@ def crawl_website_urls_route(
     )
 
 
+async def _run_llms_txt_from_urls_and_notify(payload: LlmsTxtFromUrlsRequest) -> None:
+    """Background job: generate llms.txt from selected URLs and POST result (or error) to webhook."""
+    webhook_url = str(payload.webhook_url)
+    try:
+        result = await generate_llms_txt_from_urls(payload)
+        logger.info(
+            "llms_txt_generator background from-urls: completed — "
+            f"website='{result['website_url']}', "
+            f"business='{result['business_name']}', "
+            f"chars={len(result['llms_txt_content'])}"
+        )
+        logger.info(
+            "llms_txt_generator background from-urls: webhook payload — "
+            f"url='{webhook_url}', "
+            f"body={json.dumps(result, ensure_ascii=False, default=str)}"
+        )
+        await post_to_webhook(webhook_url, result)
+    except Exception as exc:
+        logger.exception(f"llms_txt_generator background from-urls: failed — {exc}")
+        error_payload = {
+            "status": "error",
+            "message": str(exc),
+            "website_url": payload.website_url,
+            "business_name": payload.business_name,
+            "business_id": payload.business_id,
+            "url_count": len(payload.urls),
+        }
+        logger.info(
+            "llms_txt_generator background from-urls: webhook payload — "
+            f"url='{webhook_url}', "
+            f"body={json.dumps(error_payload, ensure_ascii=False, default=str)}"
+        )
+        await post_to_webhook(webhook_url, error_payload)
+
+
 @router.post("/generate-llms-txt-from-urls")
-async def generate_llms_txt_from_urls_route(payload: LlmsTxtFromUrlsRequest):
+async def generate_llms_txt_from_urls_route(
+    payload: LlmsTxtFromUrlsRequest,
+    background_tasks: BackgroundTasks,
+):
     """
     Extract title, headings, description, content, and business info from selected URLs
-    using 8 async workers, then generate llms.txt content with OpenAI (gpt-4o-mini).
+    using async workers, then generate llms.txt content with OpenAI (gpt-4o-mini).
 
-    Body: website_url, urls (required), optional business_name and max_workers.
+    Runs in the background and POSTs the result to webhook_url.
+    Body: website_url, urls, webhook_url (required), optional business_name, business_id, max_workers.
     Header: X-API-KEY required (set in application.py).
     """
     logger.info(
         "llms_txt_generator route: POST /api/generate-llms-txt-from-urls — "
         f"website_url='{payload.website_url}', "
         f"url_count={len(payload.urls)}, "
-        f"max_workers={payload.max_workers}"
+        f"max_workers={payload.max_workers}, "
+        f"webhook_url='{payload.webhook_url}'"
     )
-    try:
-        return await generate_llms_txt_from_urls(payload)
-    except ValueError as exc:
+
+    if not payload.webhook_url:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail="webhook_url is required",
         )
-    except Exception as exc:
-        logger.exception(
-            f"llms_txt_generator route: generate from URLs failed — {exc}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"llms.txt generation failed: {str(exc)}",
-        )
+
+    background_tasks.add_task(_run_llms_txt_from_urls_and_notify, payload)
+    logger.info(
+        "llms_txt_generator route: accepted — background from-urls job queued for webhook "
+        f"{payload.webhook_url}"
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "status": "accepted",
+            "message": (
+                "llms.txt generation started. Results will be sent to the webhook URL."
+            ),
+            "website_url": payload.website_url,
+            "business_name": payload.business_name,
+            "url_count": len(payload.urls),
+            "webhook_url": str(payload.webhook_url),
+        },
+    )
 
 
 @router.post("/generate-llms-txt")
