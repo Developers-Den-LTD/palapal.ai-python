@@ -16,7 +16,12 @@ class ReviewComment(BaseModel):
 
     uuid: Optional[str] = Field(None, validation_alias=AliasChoices("uuid", "UUID"))
     comment: Optional[str] = None
-    rating: Optional[Union[int, float]] = Field(None, ge=1, le=5)
+    rating: Optional[Union[int, float]] = Field(
+        None,
+        ge=0,
+        le=5,
+        description="Star rating from 0 to 5. 0 means no rating was provided.",
+    )
     author: Optional[str] = None
     date: Optional[str] = None
 

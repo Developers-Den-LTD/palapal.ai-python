@@ -146,7 +146,7 @@ Guidelines:
 - For positive reviews (4-5 stars): express gratitude and invite them back
 - For mixed reviews (3 stars): acknowledge feedback and mention improvement
 - For negative reviews (1-2 stars): apologize sincerely, stay calm, and offer to make things right offline when appropriate
-- If rating is missing, infer tone from the comment text
+- If rating is missing or 0, infer tone from the comment text and still write a full reply
 """
 
     llm_comments = [
