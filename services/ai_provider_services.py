@@ -35,12 +35,13 @@ def _build_answer_prompt(
     business_loc: str,
     questions: list[str],
 ) -> str:
+    question_count = len(questions)
     numbered_questions = "\n".join(
         f"{number}. {question}"
         for number, question in enumerate(questions, start=1)
     )
 
-    return f"""Answer these 10 questions about {business_type}s in {business_loc}.
+    return f"""Answer these {question_count} questions about {business_type}s in {business_loc}.
 
 For every question, recommend 9-10 real, specific business names in ranked order.
 Do not add descriptions, links, prices, addresses, or explanations.
@@ -55,7 +56,7 @@ Return only valid JSON in this exact shape:
   ]
 }}
 
-Include one item for every question from 1 to 10.
+Include one item for every question from 1 to {question_count}.
 
 Questions:
 {numbered_questions}"""
