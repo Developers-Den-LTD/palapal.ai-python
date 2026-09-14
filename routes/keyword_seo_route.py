@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from fastapi.responses import JSONResponse
 
@@ -13,9 +15,13 @@ router = APIRouter(
 
 
 async def _run_keyword_seo_and_notify(payload: KeywordSeoRequest) -> None:
+    """
+    Run Apify SEO work off the event loop so concurrent API requests
+    can still be accepted while a job is in progress.
+    """
     webhook_url = str(payload.webhook_url)
     try:
-        result = run_keyword_seo_analysis(payload)
+        result = await asyncio.to_thread(run_keyword_seo_analysis, payload)
         matched = result.get("matched_keyword") or {}
         logger.info(
             "keyword_seo background: completed — "

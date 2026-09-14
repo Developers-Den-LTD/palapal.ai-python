@@ -18,9 +18,13 @@ router = APIRouter(
 
 
 async def _run_citation_analysis_and_notify(payload: CitationAnalysisRequest) -> None:
+    """
+    Run multi-provider citation work off the event loop so concurrent
+    API requests can still be accepted while a job is in progress.
+    """
     webhook_url = str(payload.webhook_url)
     try:
-        result = run_citation_analysis(payload)
+        result = await asyncio.to_thread(run_citation_analysis, payload)
         logger.info(
             "citation_analysis background: completed — "
             f"status={result['status']}, "
