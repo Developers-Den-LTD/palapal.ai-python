@@ -1,8 +1,13 @@
+import asyncio
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from schema.citation_analysis_schema import CitationAnalysisRequest
-from services.citation_analysis_services import run_citation_analysis
+from services.citation_analysis_services import (
+    run_citation_analysis,
+    validate_custom_questions,
+)
 from services.logger_services import logger
 from services.webhook_poster import post_to_webhook
 
@@ -59,10 +64,40 @@ async def citation_analysis(
             detail="webhook_url is required",
         )
 
+    validation = await asyncio.to_thread(
+        validate_custom_questions,
+        payload.custom_questions,
+        payload.business_type,
+        payload.business_loc,
+    )
+
+    if not validation.get("all_valid"):
+        logger.warning(
+            "citation_analysis route: rejected invalid custom questions — "
+            f"business='{payload.business_name}', "
+            f"invalid_count={sum(1 for r in validation.get('results', []) if not r.get('valid'))}"
+        )
+        status_code = status.HTTP_400_BAD_REQUEST
+        if validation.get("validation_error"):
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "status": "invalid_queries",
+                "message": (
+                    "One or more custom questions are invalid. "
+                    "Citation analysis was not started."
+                ),
+                "results": validation.get("results", []),
+                "validator_model": validation.get("validator_model"),
+            },
+        )
+
     background_tasks.add_task(_run_citation_analysis_and_notify, payload)
     logger.info(
-        "citation_analysis route: accepted — background job queued for webhook "
-        f"{payload.webhook_url}"
+        "citation_analysis route: accepted — queries validated, "
+        f"background job queued for webhook {payload.webhook_url}"
     )
 
     return JSONResponse(
@@ -76,5 +111,10 @@ async def citation_analysis(
             "business_loc": payload.business_loc,
             "business_id": payload.business_id,
             "question_count": len(payload.custom_questions),
+            "validation": {
+                "all_valid": True,
+                "results": validation.get("results", []),
+                "validator_model": validation.get("validator_model"),
+            },
         },
     )

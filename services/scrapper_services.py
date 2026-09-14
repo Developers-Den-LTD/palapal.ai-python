@@ -32,7 +32,18 @@ ACTOR_MAX_ATTEMPTS = 3
 ACTOR_RETRY_DELAY_SECONDS = 2
 
 
-def _run_actor_with_retry(actor_id: str, run_input: dict):
+def _run_actor_with_retry(
+    actor_id: str,
+    run_input: dict,
+    *,
+    call_counter: list[int] | None = None,
+):
+    """
+    Run an Apify actor with retries.
+
+    If call_counter is provided, appends 1 for every actor.call() attempt
+    (including failed retries) so callers can log total actor runs.
+    """
     last_error = None
     for attempt in range(1, ACTOR_MAX_ATTEMPTS + 1):
         try:
@@ -40,6 +51,8 @@ def _run_actor_with_retry(actor_id: str, run_input: dict):
                 f"run_actor_with_retry: actor='{actor_id}' "
                 f"attempt {attempt}/{ACTOR_MAX_ATTEMPTS}"
             )
+            if call_counter is not None:
+                call_counter.append(1)
             return client.actor(actor_id).call(run_input=run_input)
         except Exception as e:
             last_error = e
