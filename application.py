@@ -4,7 +4,8 @@ from fastapi import FastAPI, Depends
 from routes import home_route, url_finder_route, scrapper, AI_visibility, Review_Velocity, technical_foundation, ddi_score_route
 from routes import pending_responses, all_responses, logs_router, Action_Cards_route, llms_txt_generator_route, Review_Reply, socialmedia_scrape_route, ddi_batch_route
 from routes import competitor_analysis_route, page_audit_route, reddit_discussion_route, citation_analysis_route
-from routes import keyword_seo_route
+from routes import keyword_seo_route, ai_keyword_generation_route
+from routes import review_extension_platforms_route
 from services.model_loader import load_sentiment_model
 from utils.auth_utils import verify_secret_key
 
@@ -24,7 +25,7 @@ application.include_router(ddi_score_route.router, dependencies=[Depends(verify_
 application.include_router(ddi_batch_route.router, dependencies=[Depends(verify_secret_key)])
 application.include_router(pending_responses.router, dependencies=[Depends(verify_secret_key)])
 application.include_router(all_responses.router, dependencies=[Depends(verify_secret_key)])
-application.include_router(logs_router.router, dependencies=[Depends(verify_secret_key)])
+application.include_router(logs_router.router)
 application.include_router(Action_Cards_route.router, dependencies=[Depends(verify_secret_key)])
 application.include_router(llms_txt_generator_route.router, dependencies=[Depends(verify_secret_key)])
 application.include_router(Review_Reply.router, dependencies=[Depends(verify_secret_key)])
@@ -34,6 +35,11 @@ application.include_router(page_audit_route.router, dependencies=[Depends(verify
 application.include_router(reddit_discussion_route.router, dependencies=[Depends(verify_secret_key)])
 application.include_router(citation_analysis_route.router, dependencies=[Depends(verify_secret_key)])
 application.include_router(keyword_seo_route.router, dependencies=[Depends(verify_secret_key)])
+application.include_router(ai_keyword_generation_route.router, dependencies=[Depends(verify_secret_key)])
+application.include_router(
+    review_extension_platforms_route.router,
+    dependencies=[Depends(verify_secret_key)],
+)
 
 # application.mount("/images", StaticFiles(directory="images"), name="images")
 

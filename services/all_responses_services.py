@@ -2,16 +2,54 @@ from services.logger_services import logger
 from services.s3_service import load_scraped_result_data
 from utils.scraped_result_paths import build_scrape_storage_slug
 
-PLATFORMS = ("google_maps", "yelp", "tripadvisor")
+PLATFORMS = (
+    "google_maps",
+    "yelp",
+    "tripadvisor",
+    "facebook",
+    "trustpilot",
+    "feefo",
+)
+
+
+def _first_present(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _review_comment(review: dict):
+    """
+    Core scrapers store review text as `comment`.
+    Extension platforms (facebook/trustpilot/feefo) store it as `text`.
+    Prefer a non-empty comment when both exist.
+    """
+    comment = review.get("comment")
+    if comment is not None and str(comment).strip():
+        return comment
+    text = review.get("text")
+    if text is not None and str(text).strip():
+        return text
+    return _first_present(comment, text)
+
+
+def _review_author(review: dict):
+    return _first_present(review.get("author"), review.get("authorName"))
+
+
+def _review_date(review: dict):
+    return _first_present(review.get("date"), review.get("publishedDate"))
 
 
 def _extract_review(review: dict) -> dict:
+    # Same response shape as google_maps / yelp / tripadvisor.
     return {
         "UUID": review.get("UUID"),
-        "author": review.get("author"),
+        "author": _review_author(review),
         "rating": review.get("rating"),
-        "date": review.get("date"),
-        "comment": review.get("comment"),
+        "date": _review_date(review),
+        "comment": _review_comment(review),
         "owner_reply": review.get("owner_reply"),
         "AI_Draft": review.get("AI_Draft"),
     }
@@ -58,15 +96,24 @@ def _empty_error_result(
             "google_maps": 0,
             "yelp": 0,
             "tripadvisor": 0,
+            "facebook": 0,
+            "trustpilot": 0,
+            "feefo": 0,
             "avg_rating_overall": None,
             "avg_rating_google_maps": None,
             "avg_rating_yelp": None,
             "avg_rating_tripadvisor": None,
+            "avg_rating_facebook": None,
+            "avg_rating_trustpilot": None,
+            "avg_rating_feefo": None,
         },
         "all_responses": {
             "google_maps": [],
             "yelp": [],
             "tripadvisor": [],
+            "facebook": [],
+            "trustpilot": [],
+            "feefo": [],
         },
     }
 
@@ -108,7 +155,10 @@ def get_all_responses(
     for platform in PLATFORMS:
         reviews = scraped_data.get(platform, {}).get("reviews", [])
         for review in reviews:
-            if not _has_comment(review.get("comment")):
+            if not isinstance(review, dict):
+                continue
+            comment = _review_comment(review)
+            if not _has_comment(comment):
                 continue
             responses_by_platform[platform].append(_extract_review(review))
             rating_value = _to_float_rating(review.get("rating"))
@@ -140,10 +190,16 @@ def get_all_responses(
         "google_maps": len(responses_by_platform["google_maps"]),
         "yelp": len(responses_by_platform["yelp"]),
         "tripadvisor": len(responses_by_platform["tripadvisor"]),
+        "facebook": len(responses_by_platform["facebook"]),
+        "trustpilot": len(responses_by_platform["trustpilot"]),
+        "feefo": len(responses_by_platform["feefo"]),
         "avg_rating_overall": avg_rating_overall,
         "avg_rating_google_maps": avg_by_platform["google_maps"],
         "avg_rating_yelp": avg_by_platform["yelp"],
         "avg_rating_tripadvisor": avg_by_platform["tripadvisor"],
+        "avg_rating_facebook": avg_by_platform["facebook"],
+        "avg_rating_trustpilot": avg_by_platform["trustpilot"],
+        "avg_rating_feefo": avg_by_platform["feefo"],
     }
 
     logger.info(

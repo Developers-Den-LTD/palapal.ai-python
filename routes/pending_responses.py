@@ -28,7 +28,10 @@ def pending_responses(payload: PendingResponsesRequest):
                 f"total_pending={result['summary']['total_pending']}, "
                 f"google_maps={result['summary']['google_maps']}, "
                 f"yelp={result['summary']['yelp']}, "
-                f"tripadvisor={result['summary']['tripadvisor']}"
+                f"tripadvisor={result['summary']['tripadvisor']}, "
+                f"facebook={result['summary']['facebook']}, "
+                f"trustpilot={result['summary']['trustpilot']}, "
+                f"feefo={result['summary']['feefo']}"
             )
         else:
             logger.warning(
