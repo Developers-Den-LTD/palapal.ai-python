@@ -3,9 +3,9 @@ Custom Keyword SEO Analysis.
 
 Step 1 (current): Google search visibility via Apify.
 
-Keywords are tried by priority: high → medium → low.
-Within the same priority, payload order is kept.
-Stops at the first keyword where website_url is found in organic results.
+All keywords are scraped together in 2 batched Apify runs (parallel).
+Each keyword still gets 2 scrapes and 2 Google pages.
+Priority is metadata only — used to break ties when picking matched_keyword.
 """
 
 from schema.keyword_seo_schema import KeywordItem, KeywordSeoRequest
@@ -15,11 +15,42 @@ from services.logger_services import logger
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
-def _keywords_by_priority(keywords: list[KeywordItem]) -> list[KeywordItem]:
-    """high first, then medium, then low; keep original order within each priority."""
-    indexed = list(enumerate(keywords))
-    indexed.sort(key=lambda pair: (PRIORITY_ORDER[pair[1].priority], pair[0]))
-    return [item for _, item in indexed]
+def _normalize_keyword(text: str) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def _pick_matched_keyword(attempts: list[dict]) -> dict | None:
+    """
+    Prefer the best found result (lowest position).
+    On a position tie, prefer higher priority, then earlier payload order.
+    If none found, return the first attempt (stable fallback for consumers).
+    """
+    if not attempts:
+        return None
+
+    found = [item for item in attempts if item.get("found")]
+    if not found:
+        return attempts[0]
+
+    def _sort_key(item: dict) -> tuple:
+        position = item.get("position")
+        return (
+            int(position) if position is not None else 10**9,
+            PRIORITY_ORDER.get(str(item.get("priority") or "").lower(), 99),
+            int(item.get("payload_index") or 0),
+        )
+
+    return min(found, key=_sort_key)
+
+
+def _google_by_keyword(google_results: list[dict]) -> dict[str, dict]:
+    """Map normalized keyword text → google scrape result."""
+    mapped: dict[str, dict] = {}
+    for result in google_results:
+        key = _normalize_keyword(str(result.get("keyword") or ""))
+        if key and key not in mapped:
+            mapped[key] = result
+    return mapped
 
 
 def run_keyword_seo_analysis(payload: KeywordSeoRequest) -> dict:
@@ -30,36 +61,41 @@ def run_keyword_seo_analysis(payload: KeywordSeoRequest) -> dict:
     if not website_url:
         raise ValueError(f"Invalid website_url: {website_url_raw}")
 
-    ordered_keywords = _keywords_by_priority(payload.keywords)
+    keywords: list[KeywordItem] = list(payload.keywords)
 
     logger.info(
         "keyword_seo: started — "
         f"website_raw='{website_url_raw}', website_cleaned='{website_url}', "
-        f"country_code='{country_code}', keywords={len(ordered_keywords)}, "
-        f"order={[f'{k.priority}:{k.keyword}' for k in ordered_keywords]}"
+        f"country_code='{country_code}', keywords={len(keywords)}, "
+        f"parallel=True, "
+        f"keywords={[f'{k.priority}:{k.keyword}' for k in keywords]}"
     )
 
+    keyword_texts = [item.keyword for item in keywords]
+    google_results = scrape_google_search_ranks(
+        keywords=keyword_texts,
+        website_url=website_url,
+        country_code=country_code,
+    )
+    google_map = _google_by_keyword(google_results)
+    # Prefer real Apify batch call count (usually 2), not per-keyword sums.
+    if google_results and google_results[0].get("batch_actor_runs") is not None:
+        total_actor_runs = int(google_results[0]["batch_actor_runs"] or 0)
+    else:
+        total_actor_runs = sum(
+            int(item.get("actor_runs") or 0) for item in google_results
+        )
+
     attempts: list[dict] = []
-    matched: dict | None = None
-    total_actor_runs = 0
 
-    for item in ordered_keywords:
-        logger.info(
-            "keyword_seo: trying keyword "
-            f"priority='{item.priority}', keyword='{item.keyword}'"
-        )
-
-        google_results = scrape_google_search_ranks(
-            keywords=[item.keyword],
-            website_url=website_url,
-            country_code=country_code,
-        )
-        google = google_results[0] if google_results else None
+    for index, item in enumerate(keywords):
+        google = google_map.get(_normalize_keyword(item.keyword))
 
         if not google:
             attempt = {
                 "keyword": item.keyword,
                 "priority": item.priority,
+                "payload_index": index,
                 "found": False,
                 "position": None,
                 "url": None,
@@ -75,11 +111,11 @@ def run_keyword_seo_analysis(payload: KeywordSeoRequest) -> dict:
             continue
 
         keyword_actor_runs = int(google.get("actor_runs") or 0)
-        total_actor_runs += keyword_actor_runs
 
         attempt = {
             "keyword": item.keyword,
             "priority": item.priority,
+            "payload_index": index,
             "found": google["found"],
             "position": google["position"],
             "url": google["url"],
@@ -93,44 +129,41 @@ def run_keyword_seo_analysis(payload: KeywordSeoRequest) -> dict:
         }
         attempts.append(attempt)
 
-        if google["found"]:
-            matched = attempt
-            logger.info(
-                "keyword_seo: website found — stopping. "
-                f"priority='{item.priority}', keyword='{item.keyword}', "
-                f"position={google['position']}, "
-                f"actor_runs_for_keyword={keyword_actor_runs}, "
-                f"total_actor_runs_so_far={total_actor_runs}"
-            )
-            break
-
         logger.info(
-            "keyword_seo: website not found for "
-            f"priority='{item.priority}', keyword='{item.keyword}' — "
-            f"actor_runs_for_keyword={keyword_actor_runs}, "
-            f"total_actor_runs_so_far={total_actor_runs} — trying next"
+            "keyword_seo: keyword result — "
+            f"priority='{item.priority}', keyword='{item.keyword}', "
+            f"found={attempt['found']}, position={attempt['position']}, "
+            f"actor_runs={keyword_actor_runs}"
         )
 
-    if matched is None and attempts:
-        matched = attempts[-1]
-        logger.info(
-            "keyword_seo: website not found for any keyword — "
-            f"returning last attempt keyword='{matched['keyword']}'"
-        )
+    matched = _pick_matched_keyword(attempts)
+
+    # Drop internal sort helper from webhook payload.
+    public_attempts = [
+        {k: v for k, v in attempt.items() if k != "payload_index"}
+        for attempt in attempts
+    ]
+    public_matched = None
+    if matched is not None:
+        public_matched = {
+            k: v for k, v in matched.items() if k != "payload_index"
+        }
 
     logger.info(
         "keyword_seo: completed — "
-        f"found={bool(matched and matched.get('found'))}, "
-        f"keywords_tried={len(attempts)}, "
-        f"total_actor_runs={total_actor_runs}"
+        f"found={bool(public_matched and public_matched.get('found'))}, "
+        f"keywords_tried={len(public_attempts)}, "
+        f"total_actor_runs={total_actor_runs}, "
+        f"matched_keyword="
+        f"'{public_matched.get('keyword') if public_matched else None}'"
     )
 
     return {
         "status": "success",
         "website_url": website_url,
         "country_code": country_code,
-        "found": bool(matched and matched.get("found")),
+        "found": bool(public_matched and public_matched.get("found")),
         "total_actor_runs": total_actor_runs,
-        "matched_keyword": matched,
-        "attempts": attempts,
+        "matched_keyword": public_matched,
+        "attempts": public_attempts,
     }

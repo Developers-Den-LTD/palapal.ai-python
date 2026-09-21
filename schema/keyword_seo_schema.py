@@ -9,7 +9,10 @@ class KeywordItem(BaseModel):
     )
     priority: str = Field(
         ...,
-        description="Keyword importance (high, medium, low)",
+        description=(
+            "Keyword importance (high, medium, low). "
+            "Used only to break ties when choosing matched_keyword"
+        ),
         min_length=1,
     )
 
@@ -44,7 +47,10 @@ class KeywordSeoRequest(BaseModel):
     )
     keywords: list[KeywordItem] = Field(
         ...,
-        description="Keywords to try on Google by priority (max 20)",
+        description=(
+            "Keywords to check on Google in parallel (max 20). "
+            "priority is metadata used only to break ties for matched_keyword"
+        ),
         min_length=1,
         max_length=20,
     )

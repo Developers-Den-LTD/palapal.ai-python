@@ -2,14 +2,18 @@
 Google Search visibility via Apify apify/google-search-scraper.
 
 For each keyword:
-- scrape up to KEYWORD_SCRAPE_ATTEMPTS times
+- scrape KEYWORD_SCRAPE_ATTEMPTS times
 - use maxPagesPerQuery = 2
 - if the site appears in any attempt → found
 - keep the best (lowest absolute) position across attempts
+
+Speed: all keywords are batched into KEYWORD_SCRAPE_ATTEMPTS Apify runs
+(newline-separated queries). Those batch runs execute in parallel.
+Example: 6 keywords × 2 attempts → 2 actor calls (not 12).
 """
 
 import re
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, urlunparse
 
 from services.logger_services import logger
@@ -20,7 +24,6 @@ GOOGLE_SEARCH_ACTOR = "apify/google-search-scraper"
 MAX_SEARCH_VISIBILITY_SCORE = 15
 KEYWORD_SCRAPE_ATTEMPTS = 2
 MAX_PAGES_PER_QUERY = 2
-RETRY_DELAY_SECONDS = 2
 
 # Google displayedUrl values sometimes look like:
 # "https://www.example.com › path › page"
@@ -217,6 +220,8 @@ def _merge_organic_results_absolute(
 def _matching_serp_items(
     items: list[dict],
     keyword: str,
+    *,
+    allow_all_fallback: bool = True,
 ) -> list[dict]:
     """Pick dataset items that belong to this keyword (all pages)."""
     key = _normalize_query_key(keyword)
@@ -231,8 +236,9 @@ def _matching_serp_items(
         if _normalize_query_key(term) == key:
             matched.append(item)
 
-    # Fallback: if term matching fails, use all returned items (single-keyword run).
-    if not matched:
+    # Fallback only for single-keyword runs. Never reuse the full dataset
+    # when multiple keywords were scraped together.
+    if not matched and allow_all_fallback:
         matched = [item for item in items if isinstance(item, dict)]
         if matched:
             logger.warning(
@@ -242,16 +248,53 @@ def _matching_serp_items(
     return matched
 
 
-def _scrape_keyword_once(
+def _parse_batch_items_for_keywords(
     *,
-    keyword: str,
+    items: list[dict],
+    keywords: list[str],
+    website_url: str,
+) -> dict[str, dict]:
+    """Split one batched Apify dataset into per-keyword scrape results."""
+    multi_keyword = len(keywords) > 1
+    by_keyword: dict[str, dict] = {}
+
+    for keyword in keywords:
+        matching_items = _matching_serp_items(
+            items,
+            keyword,
+            allow_all_fallback=not multi_keyword,
+        )
+        query_used, organic_results = _merge_organic_results_absolute(
+            matching_items,
+            fallback_keyword=keyword,
+        )
+        owned = _find_owned_organic_result(organic_results, website_url)
+        by_keyword[keyword] = {
+            "query": query_used,
+            "organic_results": organic_results,
+            "owned": owned,
+            "dataset_item_count": len(matching_items),
+        }
+
+    return by_keyword
+
+
+def _scrape_keywords_batch_once(
+    *,
+    keywords: list[str],
     website_url: str,
     country_code: str,
+    attempt: int,
     call_counter: list[int] | None = None,
 ) -> dict:
-    """One Apify run for one keyword (up to 2 Google pages)."""
+    """
+    One Apify run for ALL keywords (newline-separated queries).
+
+    Keeps maxPagesPerQuery = 2 for every keyword inside this single run.
+    """
+    queries = "\n".join(keywords)
     run_input = {
-        "queries": keyword,
+        "queries": queries,
         "maxPagesPerQuery": MAX_PAGES_PER_QUERY,
         "countryCode": country_code.lower(),
         "languageCode": "en",
@@ -260,7 +303,16 @@ def _scrape_keyword_once(
         "saveHtmlToKeyValueStore": False,
         "maximumLeadsEnrichmentRecords": 0,
         "focusOnPaidAds": False,
+        # Let Apify scrape multiple queries concurrently inside this one run.
+        "maxConcurrency": min(10, max(1, len(keywords))),
     }
+
+    logger.info(
+        f"google_search: batch attempt {attempt}/{KEYWORD_SCRAPE_ATTEMPTS} — "
+        f"starting actor with {len(keywords)} keyword(s), "
+        f"max_pages={MAX_PAGES_PER_QUERY}, "
+        f"maxConcurrency={run_input['maxConcurrency']}"
+    )
 
     run = _run_actor_with_retry(
         GOOGLE_SEARCH_ACTOR,
@@ -268,18 +320,139 @@ def _scrape_keyword_once(
         call_counter=call_counter,
     )
     items = list_actor_items(run)
-    matching_items = _matching_serp_items(items, keyword)
-    query_used, organic_results = _merge_organic_results_absolute(
-        matching_items,
-        fallback_keyword=keyword,
+    by_keyword = _parse_batch_items_for_keywords(
+        items=items,
+        keywords=keywords,
+        website_url=website_url,
     )
-    owned = _find_owned_organic_result(organic_results, website_url)
+
+    logger.info(
+        f"google_search: batch attempt {attempt}/{KEYWORD_SCRAPE_ATTEMPTS} — "
+        f"dataset_items={len(items)}, keywords_parsed={len(by_keyword)}"
+    )
 
     return {
-        "query": query_used,
-        "organic_results": organic_results,
-        "owned": owned,
+        "by_keyword": by_keyword,
         "dataset_item_count": len(items),
+    }
+
+
+def _merge_keyword_attempt_results(
+    *,
+    keyword: str,
+    attempt_outcomes: list[dict],
+) -> dict:
+    """
+    Merge parallel scrape attempts for one keyword.
+
+    Found if present in any successful attempt; keep best (lowest) position.
+    If every attempt failed with no SERP data, return a missing-band result
+    that includes an error string (caller may raise if all keywords hard-fail).
+    """
+    best_owned: dict | None = None
+    best_organics: list[dict] = []
+    query_used = keyword
+    last_error: Exception | None = None
+    total_actor_runs = 0
+    successful_attempts = 0
+
+    for outcome in attempt_outcomes:
+        total_actor_runs += int(outcome.get("actor_runs") or 0)
+        error = outcome.get("error")
+        if error is not None:
+            last_error = error
+            continue
+
+        successful_attempts += 1
+        once = outcome["result"]
+        query_used = once["query"] or keyword
+        organics = once["organic_results"] or []
+        owned = once["owned"]
+
+        logger.info(
+            f"google_search: keyword='{keyword}' "
+            f"attempt {outcome['attempt']}/{KEYWORD_SCRAPE_ATTEMPTS} — "
+            f"dataset_items={once['dataset_item_count']}, "
+            f"organic_count={len(organics)}, "
+            f"found={owned is not None}"
+            + (f", position={owned['position']}" if owned else "")
+            + f", actor_runs={outcome.get('actor_runs') or 0}"
+        )
+
+        if owned is not None:
+            if best_owned is None or owned["position"] < best_owned["position"]:
+                best_owned = owned
+                best_organics = organics
+
+        # Keep last successful organics if never found, so webhook still has SERP data.
+        if best_owned is None:
+            best_organics = organics
+
+    attempts_used = len(attempt_outcomes)
+    hard_failed = (
+        best_owned is None
+        and last_error is not None
+        and not best_organics
+        and successful_attempts == 0
+    )
+
+    if hard_failed:
+        logger.info(
+            f"google_search: keyword='{keyword}' — actor ran "
+            f"{total_actor_runs} time(s) before failing"
+        )
+        return {
+            "keyword": keyword,
+            "query": query_used,
+            "organic_count": 0,
+            "organic_results": [],
+            "scrape_attempts": attempts_used,
+            "actor_runs": total_actor_runs,
+            "found": False,
+            "position": None,
+            "url": None,
+            "title": None,
+            "displayed_url": None,
+            "score": 0,
+            "max_score": MAX_SEARCH_VISIBILITY_SCORE,
+            "band": "missing",
+            "error": str(last_error),
+        }
+
+    visibility = score_search_visibility(
+        best_owned["position"] if best_owned else None
+    )
+
+    if best_owned:
+        logger.info(
+            f"google_search: keyword='{keyword}' — FOUND after "
+            f"{successful_attempts}/{attempts_used} successful attempt(s), "
+            f"best_position={best_owned['position']}, "
+            f"url='{best_owned['url']}', actor_runs={total_actor_runs}"
+        )
+    else:
+        logger.info(
+            f"google_search: keyword='{keyword}' — NOT FOUND after "
+            f"{successful_attempts}/{attempts_used} successful attempt(s), "
+            f"organic_count={len(best_organics)}, "
+            f"actor_runs={total_actor_runs}"
+        )
+
+    return {
+        "keyword": keyword,
+        "query": query_used,
+        "organic_count": len(best_organics),
+        "organic_results": best_organics,
+        "scrape_attempts": attempts_used,
+        "actor_runs": total_actor_runs,
+        "found": best_owned is not None,
+        "position": best_owned["position"] if best_owned else None,
+        "url": best_owned["url"] if best_owned else None,
+        "title": best_owned["title"] if best_owned else None,
+        "displayed_url": best_owned["displayed_url"] if best_owned else None,
+        "score": visibility["score"],
+        "max_score": visibility["max_score"],
+        "band": visibility["band"],
     }
 
 
@@ -290,8 +463,11 @@ def scrape_google_search_ranks(
     country_code: str,
 ) -> list[dict]:
     """
-    For each keyword, scrape Google up to KEYWORD_SCRAPE_ATTEMPTS times
-    (2 pages each). Found if present in any attempt; keep best position.
+    For each keyword, scrape Google KEYWORD_SCRAPE_ATTEMPTS times (2 pages each).
+
+    All keywords are sent together in each Apify run (newline-separated).
+    KEYWORD_SCRAPE_ATTEMPTS batch runs execute in parallel.
+    Found if present in any attempt; keep best position per keyword.
     """
     cleaned_keywords: list[str] = []
     seen: set[str] = set()
@@ -318,124 +494,138 @@ def scrape_google_search_ranks(
         f"'{website_url}' → '{cleaned_website_url}' (host='{owned_host}')"
     )
 
-    results: list[dict] = []
-    total_actor_runs = 0
+    logger.info(
+        "google_search: starting batched scrapes — "
+        f"keywords={len(cleaned_keywords)}, "
+        f"batch_runs={KEYWORD_SCRAPE_ATTEMPTS}, "
+        f"max_pages={MAX_PAGES_PER_QUERY}, "
+        f"mode=all_keywords_per_run"
+    )
 
-    for keyword in cleaned_keywords:
-        best_owned: dict | None = None
-        best_organics: list[dict] = []
-        query_used = keyword
-        attempts_used = 0
-        last_error: Exception | None = None
+    def _run_batch_attempt(attempt: int) -> dict:
         call_counter: list[int] = []
+        try:
+            result = _scrape_keywords_batch_once(
+                keywords=cleaned_keywords,
+                website_url=cleaned_website_url,
+                country_code=country_code,
+                attempt=attempt,
+                call_counter=call_counter,
+            )
+            return {
+                "attempt": attempt,
+                "by_keyword": result["by_keyword"],
+                "dataset_item_count": result["dataset_item_count"],
+                "error": None,
+                "actor_runs": len(call_counter),
+            }
+        except Exception as exc:
+            logger.warning(
+                f"google_search: batch attempt {attempt}/"
+                f"{KEYWORD_SCRAPE_ATTEMPTS} failed — {exc}"
+            )
+            return {
+                "attempt": attempt,
+                "by_keyword": {},
+                "dataset_item_count": 0,
+                "error": exc,
+                "actor_runs": len(call_counter),
+            }
 
-        logger.info(
-            f"google_search: keyword='{keyword}' — starting up to "
-            f"{KEYWORD_SCRAPE_ATTEMPTS} attempt(s), "
-            f"max_pages={MAX_PAGES_PER_QUERY}"
-        )
+    batch_outcomes: list[dict] = []
+    with ThreadPoolExecutor(max_workers=KEYWORD_SCRAPE_ATTEMPTS) as executor:
+        futures = [
+            executor.submit(_run_batch_attempt, attempt)
+            for attempt in range(1, KEYWORD_SCRAPE_ATTEMPTS + 1)
+        ]
+        for future in as_completed(futures):
+            batch_outcomes.append(future.result())
 
-        for attempt in range(1, KEYWORD_SCRAPE_ATTEMPTS + 1):
-            attempts_used = attempt
-            try:
-                logger.info(
-                    f"google_search: keyword='{keyword}' "
-                    f"attempt {attempt}/{KEYWORD_SCRAPE_ATTEMPTS}"
+    batch_outcomes.sort(key=lambda item: int(item["attempt"]))
+    batch_actor_runs = sum(int(item.get("actor_runs") or 0) for item in batch_outcomes)
+
+    # Convert batch outcomes → per-keyword attempt outcomes for existing merge logic.
+    outcomes_by_keyword: dict[str, list[dict]] = {
+        keyword: [] for keyword in cleaned_keywords
+    }
+    for batch in batch_outcomes:
+        attempt = int(batch["attempt"])
+        batch_error = batch.get("error")
+        # One Apify call covered every keyword in this attempt.
+        per_keyword_actor_share = 1 if int(batch.get("actor_runs") or 0) > 0 else 0
+
+        if batch_error is not None:
+            for keyword in cleaned_keywords:
+                outcomes_by_keyword[keyword].append(
+                    {
+                        "keyword": keyword,
+                        "attempt": attempt,
+                        "result": None,
+                        "error": batch_error,
+                        "actor_runs": per_keyword_actor_share,
+                    }
                 )
-                once = _scrape_keyword_once(
-                    keyword=keyword,
-                    website_url=cleaned_website_url,
-                    country_code=country_code,
-                    call_counter=call_counter,
+            continue
+
+        by_keyword = batch.get("by_keyword") or {}
+        for keyword in cleaned_keywords:
+            kw_once = by_keyword.get(keyword)
+            if not kw_once:
+                outcomes_by_keyword[keyword].append(
+                    {
+                        "keyword": keyword,
+                        "attempt": attempt,
+                        "result": {
+                            "query": keyword,
+                            "organic_results": [],
+                            "owned": None,
+                            "dataset_item_count": 0,
+                        },
+                        "error": None,
+                        "actor_runs": per_keyword_actor_share,
+                    }
                 )
-            except Exception as exc:
-                last_error = exc
-                logger.warning(
-                    f"google_search: keyword='{keyword}' "
-                    f"attempt {attempt} failed — {exc}"
-                )
-                if attempt < KEYWORD_SCRAPE_ATTEMPTS:
-                    time.sleep(RETRY_DELAY_SECONDS)
                 continue
 
-            query_used = once["query"] or keyword
-            organics = once["organic_results"] or []
-            owned = once["owned"]
-
-            logger.info(
-                f"google_search: keyword='{keyword}' attempt {attempt} — "
-                f"dataset_items={once['dataset_item_count']}, "
-                f"organic_count={len(organics)}, "
-                f"found={owned is not None}"
-                + (
-                    f", position={owned['position']}"
-                    if owned
-                    else ""
-                )
-                + f", actor_runs_so_far={len(call_counter)}"
+            outcomes_by_keyword[keyword].append(
+                {
+                    "keyword": keyword,
+                    "attempt": attempt,
+                    "result": kw_once,
+                    "error": None,
+                    "actor_runs": per_keyword_actor_share,
+                }
             )
 
-            if owned is not None:
-                if best_owned is None or owned["position"] < best_owned["position"]:
-                    best_owned = owned
-                    best_organics = organics
+    results: list[dict] = []
+    hard_failures: list[str] = []
 
-            # Keep last organics if never found, so webhook still has SERP data.
-            if best_owned is None:
-                best_organics = organics
-
-            if attempt < KEYWORD_SCRAPE_ATTEMPTS:
-                time.sleep(RETRY_DELAY_SECONDS)
-
-        keyword_actor_runs = len(call_counter)
-        total_actor_runs += keyword_actor_runs
-
-        if best_owned is None and last_error is not None and not best_organics:
-            logger.info(
-                f"google_search: keyword='{keyword}' — actor ran "
-                f"{keyword_actor_runs} time(s) before failing"
-            )
-            raise last_error
-
-        visibility = score_search_visibility(
-            best_owned["position"] if best_owned else None
+    for keyword in cleaned_keywords:
+        attempt_outcomes = sorted(
+            outcomes_by_keyword[keyword],
+            key=lambda item: int(item["attempt"]),
         )
+        merged = _merge_keyword_attempt_results(
+            keyword=keyword,
+            attempt_outcomes=attempt_outcomes,
+        )
+        # Actual Apify calls for the whole job (shared across keywords).
+        merged["batch_actor_runs"] = batch_actor_runs
+        if merged.get("error") and not merged.get("organic_results"):
+            hard_failures.append(keyword)
+        results.append(merged)
 
-        if best_owned:
-            logger.info(
-                f"google_search: keyword='{keyword}' — FOUND after "
-                f"{attempts_used} attempt(s), best_position={best_owned['position']}, "
-                f"url='{best_owned['url']}', actor_runs={keyword_actor_runs}"
-            )
-        else:
-            logger.info(
-                f"google_search: keyword='{keyword}' — NOT FOUND after "
-                f"{attempts_used} attempt(s), "
-                f"organic_count={len(best_organics)}, "
-                f"actor_runs={keyword_actor_runs}"
-            )
-
-        results.append(
-            {
-                "keyword": keyword,
-                "query": query_used,
-                "organic_count": len(best_organics),
-                "organic_results": best_organics,
-                "scrape_attempts": attempts_used,
-                "actor_runs": keyword_actor_runs,
-                "found": best_owned is not None,
-                "position": best_owned["position"] if best_owned else None,
-                "url": best_owned["url"] if best_owned else None,
-                "title": best_owned["title"] if best_owned else None,
-                "displayed_url": best_owned["displayed_url"] if best_owned else None,
-                "score": visibility["score"],
-                "max_score": visibility["max_score"],
-                "band": visibility["band"],
-            }
+    if hard_failures and len(hard_failures) == len(results):
+        details = "; ".join(
+            f"{item['keyword']}: {item.get('error')}" for item in results
+        )
+        raise RuntimeError(
+            "Google search failed for all keywords — " + details
         )
 
     logger.info(
-        f"google_search: finished — total_actor_runs={total_actor_runs} "
+        f"google_search: finished — batch_actor_runs={batch_actor_runs} "
         f"across {len(results)} keyword(s)"
+        + (f", hard_failures={hard_failures}" if hard_failures else "")
     )
     return results
