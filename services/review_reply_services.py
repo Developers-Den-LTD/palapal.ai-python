@@ -4,7 +4,12 @@ from datetime import datetime
 from openai import OpenAI
 
 from core.config import settings
-from schema.review_reply_schema import ReplyTemplate, ReviewComment, ReviewReplyRequest
+from schema.review_reply_schema import (
+    EditDraftRequest,
+    ReplyTemplate,
+    ReviewComment,
+    ReviewReplyRequest,
+)
 from services.logger_services import logger
 from services.s3_service import load_scraped_result_data
 from services.scrapper_services import save_scraped_result
@@ -76,7 +81,8 @@ def _load_scraped_data(business_name: str, business_id: str | int) -> dict:
     except FileNotFoundError as exc:
         raise ValueError(
             f"No scraped_result.json found for business '{business_name}' "
-            f"with business_id={business_id}. Run scrape API first."
+            f"with business_id='{business_id}'. "
+            "Check business_name/business_id, or run scrape API first."
         ) from exc
 
 
@@ -126,18 +132,52 @@ def _prepare_comments(
     return prepared
 
 
+def _build_template_style_instructions(template: ReplyTemplate) -> str:
+    """Build LLM style block from template fields (skip empty optional ones)."""
+    lines = ["Template instructions:"]
+    lines.append(f"- Write every reply in a {template.tone} tone")
+
+    if template.writing_style:
+        lines.append(f"- Writing style: {template.writing_style}")
+
+    if template.response_length:
+        lines.append(f"- Response length: {template.response_length}")
+
+    if template.preferred_wording:
+        wording = "; ".join(template.preferred_wording)
+        lines.append(
+            "- Preferred wording (use when natural, do not force awkwardly): "
+            f"{wording}"
+        )
+
+    if template.sign_off:
+        lines.append(
+            f'- Sign-off: end with "{template.sign_off}" when a closing is appropriate'
+        )
+
+    if template.response_structure:
+        lines.append(f"- Response structure: {template.response_structure}")
+
+    lines.append(f"- Follow this style and messaging approach: {template.prompt}")
+    lines.append(
+        "- Adapt the wording to each specific review while keeping the same "
+        "tone, style, and template preferences"
+    )
+    return "\n" + "\n".join(lines) + "\n"
+
+
 def _build_prompt(
     business_name: str,
     comment_items: list[dict],
     template: ReplyTemplate | None = None,
 ) -> str:
     if template:
-        style_instructions = f"""
-Template instructions:
-- Write every reply in a {template.tone.strip()} tone
-- Follow this style and messaging approach: {template.prompt.strip()}
-- Adapt the wording to each specific review while keeping the same tone and style
-"""
+        style_instructions = _build_template_style_instructions(template)
+        length_rule = (
+            f"- Keep each reply to this length guidance: {template.response_length}"
+            if template.response_length
+            else "- Keep each reply concise: 2-4 sentences"
+        )
     else:
         style_instructions = """
 Guidelines:
@@ -148,6 +188,7 @@ Guidelines:
 - For negative reviews (1-2 stars): apologize sincerely, stay calm, and offer to make things right offline when appropriate
 - If rating is missing or 0, infer tone from the comment text and still write a full reply
 """
+        length_rule = "- Keep each reply concise: 2-4 sentences"
 
     llm_comments = [
         {
@@ -181,7 +222,7 @@ Guidelines:
 Write a thoughtful, professional owner reply for every review below.
 {style_instructions}
 - Use the reviewer's name when author is provided (e.g. "Hi Sarah,")
-- Keep each reply concise: 2-4 sentences
+{length_rule}
 - Do not invent policies, discounts, or contact details
 - Do not mention that you are an AI
 - Do not repeat the full review back to the customer
@@ -327,6 +368,110 @@ def _persist_scraped_data(
     return {
         "local_saved": local_saved,
         "s3_saved": s3_saved,
+    }
+
+
+def _normalize_business_id(value: str | int | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _assert_business_id_matches(
+    scraped_data: dict,
+    business_id: str | int,
+) -> None:
+    """
+    Ensure request business_id matches the id stored in scraped_result.json
+    when that field is present.
+    """
+    request_id = _normalize_business_id(business_id)
+    if not request_id:
+        raise ValueError("business_id is required")
+
+    stored_raw = scraped_data.get("business_id")
+    stored_id = _normalize_business_id(stored_raw)
+    if stored_id is None:
+        # Older files may omit business_id; path already scoped by business_id.
+        return
+
+    if stored_id.lower() != request_id.lower():
+        raise ValueError(
+            f"business_id mismatch: request has '{request_id}' but "
+            f"scraped_result.json has '{stored_id}'"
+        )
+
+
+def edit_review_drafts(payload: EditDraftRequest) -> dict:
+    """
+    Save edit_draft onto matching reviews by uuid (writes to stored AI_Draft).
+    Other review fields are left unchanged.
+    """
+    business_name = payload.business_name.strip()
+    business_id = _validate_business_id(payload.business_id)
+
+    scraped_data = _load_scraped_data(business_name, business_id)
+    _assert_business_id_matches(scraped_data, business_id)
+
+    seen_uuids: set[str] = set()
+    updates: list[dict] = []
+
+    for item in payload.comments:
+        comment_uuid = _validate_uuid(item.uuid)
+        uuid_key = comment_uuid.lower()
+        if uuid_key in seen_uuids:
+            raise ValueError(f"duplicate uuid in request: '{comment_uuid}'")
+        seen_uuids.add(uuid_key)
+
+        location = _find_review_location(scraped_data, comment_uuid)
+        if not location:
+            raise ValueError(
+                f"uuid '{comment_uuid}' not found in scraped_result.json "
+                f"for business_id='{business_id}'"
+            )
+
+        try:
+            new_draft = item.resolved_edit_draft()
+        except ValueError as exc:
+            raise ValueError(f"uuid '{comment_uuid}': {exc}") from exc
+
+        platform, index = location
+        previous_draft = scraped_data[platform]["reviews"][index].get("AI_Draft")
+
+        scraped_data[platform]["reviews"][index]["AI_Draft"] = new_draft
+
+        updates.append(
+            {
+                "uuid": comment_uuid,
+                "platform": platform,
+                "previous_AI_Draft": previous_draft,
+                "edit_draft": new_draft,
+                "AI_Draft": new_draft,
+                "action": "updated",
+            }
+        )
+
+    logger.info(
+        f"review_reply edit_draft: saving — business='{business_name}', "
+        f"business_id='{business_id}', updates={len(updates)}"
+    )
+
+    storage = _persist_scraped_data(scraped_data, business_name, business_id)
+    if not storage.get("local_saved"):
+        raise RuntimeError(
+            "Failed to save updated AI_Draft to scraped_result.json"
+        )
+
+    return {
+        "status": "success",
+        "message": "AI_Draft updated successfully from edit_draft",
+        "business_name": business_name,
+        "business_id": business_id,
+        "updated_at": _now(),
+        "updated_count": len(updates),
+        "updates": updates,
+        "storage": storage,
     }
 
 
