@@ -5,10 +5,14 @@ from openai import OpenAI
 
 from core.config import settings
 from schema.review_reply_schema import (
+    CurrentTemplateInput,
     EditDraftRequest,
     ReplyTemplate,
     ReviewComment,
     ReviewReplyRequest,
+    SuggestTemplateRequest,
+    SuggestedTemplate,
+    SUGGESTED_TONES,
 )
 from services.logger_services import logger
 from services.s3_service import load_scraped_result_data
@@ -156,7 +160,15 @@ def _build_template_style_instructions(template: ReplyTemplate) -> str:
         )
 
     if template.response_structure:
-        lines.append(f"- Response structure: {template.response_structure}")
+        structure = " → ".join(template.response_structure)
+        lines.append(
+            "- Response structure (follow this order): "
+            + "; ".join(
+                f"{index}. {part}"
+                for index, part in enumerate(template.response_structure, start=1)
+            )
+            + f" ({structure})"
+        )
 
     lines.append(f"- Follow this style and messaging approach: {template.prompt}")
     lines.append(
@@ -530,4 +542,228 @@ def generate_review_replies(payload: ReviewReplyRequest) -> dict:
         "generated_at": _now(),
         "replies": current_replies,
         "storage": storage,
+    }
+
+
+SUGGEST_TEMPLATE_MESSAGE = (
+    "You have modified the AI-generated response. "
+    "Would you like to update your response template to reflect these preferences?"
+)
+MAX_SUGGEST_ATTEMPTS = 2
+
+
+def _normalize_draft_text(text: str | None) -> str:
+    return " ".join((text or "").split()).strip().lower()
+
+
+def _drafts_meaningfully_differ(original: str, edited: str) -> bool:
+    """True when edited text is meaningfully different from the original AI draft."""
+    original_norm = _normalize_draft_text(original)
+    edited_norm = _normalize_draft_text(edited)
+    if not edited_norm:
+        return False
+    if not original_norm:
+        # User wrote a reply with no prior AI draft — treat as a preference signal.
+        return True
+    return original_norm != edited_norm
+
+
+def _current_template_as_dict(
+    template: CurrentTemplateInput | None,
+) -> dict | None:
+    if template is None:
+        return None
+    data = template.model_dump(by_alias=True, exclude_none=True)
+    return data or None
+
+
+def _build_suggest_template_prompt(payload: SuggestTemplateRequest) -> str:
+    current = _current_template_as_dict(payload.current_template)
+    review_context = {
+        "author": payload.author,
+        "rating": payload.rating,
+        "comment": payload.comment,
+        "uuid": payload.uuid,
+    }
+    return f"""You analyze how a business owner edited an AI-generated public review reply,
+then propose an updated response template that reflects their preferences.
+
+Business name: {payload.business_name}
+
+Original AI-generated reply:
+{payload.original_AI_Draft}
+
+User-edited reply:
+{payload.edit_draft}
+
+Current template (may be null):
+{json.dumps(current, ensure_ascii=False, indent=2)}
+
+Review context (optional):
+{json.dumps(review_context, ensure_ascii=False, indent=2)}
+
+Infer preferences from the differences between the original and edited replies.
+Focus on:
+- tone
+- writing style
+- response length
+- preferred wording / phrases
+- sign-off
+- response structure
+- a reusable Prompt for future AI replies
+
+Rules:
+- tone MUST be exactly one of: {", ".join(SUGGESTED_TONES)}
+- preferred_wording must be an array of short phrases (or empty array)
+- response_structure must be an array of ordered steps (e.g. ["greeting", "thanks", "invite back", "sign-off"])
+- Prompt must be clear reusable instructions for generating future replies
+- Do not invent business policies, discounts, or contact details
+- Keep suggestions practical and based on the edit
+
+Return only valid JSON in this exact shape:
+{{
+  "tone": "Friendly",
+  "writing_style": "...",
+  "response_length": "...",
+  "preferred_wording": ["..."],
+  "sign_off": "...",
+  "response_structure": ["greeting", "thanks", "invite back", "sign-off"],
+  "Prompt": "...",
+  "title": "optional label",
+  "diff_summary": "short summary of what the user changed"
+}}"""
+
+
+def _parse_suggested_template(raw_text: str) -> tuple[SuggestedTemplate, str | None]:
+    payload = json.loads(raw_text)
+    if not isinstance(payload, dict):
+        raise ValueError("Model response must be a JSON object")
+
+    suggested = SuggestedTemplate.model_validate(
+        {
+            "title": payload.get("title"),
+            "tone": payload.get("tone"),
+            "writing_style": payload.get("writing_style"),
+            "response_length": payload.get("response_length"),
+            "preferred_wording": payload.get("preferred_wording"),
+            "sign_off": payload.get("sign_off") or payload.get("sign_offs"),
+            "response_structure": payload.get("response_structure"),
+            "Prompt": payload.get("Prompt") or payload.get("prompt"),
+        }
+    )
+    diff_summary = payload.get("diff_summary")
+    if diff_summary is not None:
+        diff_summary = str(diff_summary).strip() or None
+    return suggested, diff_summary
+
+
+def _analyze_template_with_llm(
+    client: OpenAI,
+    payload: SuggestTemplateRequest,
+) -> tuple[SuggestedTemplate, str | None]:
+    last_error: Exception | None = None
+
+    for attempt in range(1, MAX_SUGGEST_ATTEMPTS + 1):
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert at reverse-engineering writing preferences "
+                        "from edited review replies. Return only valid JSON."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": _build_suggest_template_prompt(payload),
+                },
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.4,
+            max_completion_tokens=2048,
+        )
+        raw_text = response.choices[0].message.content or ""
+        try:
+            return _parse_suggested_template(raw_text)
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                f"review_reply suggest_template: parse attempt "
+                f"{attempt}/{MAX_SUGGEST_ATTEMPTS} failed — {exc}"
+            )
+
+    raise ValueError(
+        f"Failed to analyze template preferences: {last_error}"
+    )
+
+
+def suggest_template_from_edit(payload: SuggestTemplateRequest) -> dict:
+    """
+    Analyze original AI draft vs user edit_draft and suggest template updates.
+    Does not save anything — Accept/Reject stays with the client.
+    """
+    business_name = payload.business_name.strip()
+    original = payload.original_AI_Draft if payload.original_AI_Draft is not None else ""
+    edited = payload.edit_draft if payload.edit_draft is not None else ""
+
+    was_modified = _drafts_meaningfully_differ(original, edited)
+    logger.info(
+        "review_reply suggest_template: start — "
+        f"business='{business_name}', "
+        f"business_id='{payload.business_id}', "
+        f"was_modified={was_modified}, "
+        f"has_current_template={payload.current_template is not None}"
+    )
+
+    if not was_modified:
+        return {
+            "status": "success",
+            "business_name": business_name,
+            "business_id": payload.business_id,
+            "was_modified": False,
+            "should_suggest_update": False,
+            "message": (
+                "No meaningful changes detected between the AI-generated "
+                "response and the edited draft."
+            ),
+            "detected_preferences": None,
+            "suggested_template": None,
+            "diff_summary": None,
+            "analyzed_at": _now(),
+        }
+
+    if not edited.strip():
+        raise ValueError("edit_draft cannot be empty when suggesting a template update")
+
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    suggested, diff_summary = _analyze_template_with_llm(client, payload)
+    suggested_payload = suggested.model_dump(by_alias=True)
+
+    detected_preferences = {
+        "tone": suggested_payload.get("tone"),
+        "writing_style": suggested_payload.get("writing_style"),
+        "response_length": suggested_payload.get("response_length"),
+        "preferred_wording": suggested_payload.get("preferred_wording"),
+        "sign_off": suggested_payload.get("sign_off"),
+        "response_structure": suggested_payload.get("response_structure"),
+        "Prompt": suggested_payload.get("Prompt"),
+    }
+
+    logger.info(
+        "review_reply suggest_template: completed — "
+        f"business='{business_name}', tone='{suggested.tone}'"
+    )
+
+    return {
+        "status": "success",
+        "business_name": business_name,
+        "business_id": payload.business_id,
+        "was_modified": True,
+        "should_suggest_update": True,
+        "message": SUGGEST_TEMPLATE_MESSAGE,
+        "detected_preferences": detected_preferences,
+        "suggested_template": suggested_payload,
+        "diff_summary": diff_summary,
+        "analyzed_at": _now(),
     }
