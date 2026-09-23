@@ -54,6 +54,7 @@ def _extract_pending_review(review: dict) -> dict:
     # Same response shape as google_maps / yelp / tripadvisor.
     return {
         "UUID": review.get("UUID"),
+        "template_id": review.get("template_id"),
         "author": _review_author(review),
         "rating": review.get("rating"),
         "date": _review_date(review),

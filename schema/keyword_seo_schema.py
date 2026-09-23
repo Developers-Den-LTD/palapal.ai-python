@@ -1,3 +1,5 @@
+from typing import Optional, Union
+
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
@@ -34,6 +36,18 @@ class KeywordItem(BaseModel):
 
 
 class KeywordSeoRequest(BaseModel):
+    business_name: str = Field(
+        ...,
+        description="Name of the business",
+        min_length=1,
+    )
+    business_id: Optional[Union[str, int]] = Field(
+        None,
+        description=(
+            "Client-side business identifier. When provided, S3 results are "
+            "stored under businessname_businessid."
+        ),
+    )
     website_url: str = Field(
         ...,
         description="Business website URL used to match Google organic results",
@@ -59,12 +73,12 @@ class KeywordSeoRequest(BaseModel):
         description="URL that receives the result via POST when processing completes",
     )
 
-    @field_validator("website_url")
+    @field_validator("business_name", "website_url")
     @classmethod
-    def _strip_website_url(cls, value: str) -> str:
+    def _strip_required_text(cls, value: str) -> str:
         cleaned = value.strip()
         if not cleaned:
-            raise ValueError("website_url cannot be empty")
+            raise ValueError("Value cannot be empty")
         return cleaned
 
     @field_validator("country_code")

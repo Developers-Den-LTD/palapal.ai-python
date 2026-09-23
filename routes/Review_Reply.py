@@ -75,6 +75,8 @@ def review_reply(
         f"business='{payload.business_name}', "
         f"business_id='{payload.business_id}', "
         f"template={'yes' if payload.template else 'no'}, "
+        f"template_id="
+        f"'{payload.template.template_id if payload.template else None}', "
         f"comment_count={len(payload.comments)}, "
         f"webhook_url='{payload.webhook_url}'"
     )

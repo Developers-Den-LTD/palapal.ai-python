@@ -742,9 +742,15 @@ def _assign_review_uuids(result: dict) -> dict:
     for platform in ("google_maps", "yelp", "tripadvisor"):
         reviews = result.get(platform, {}).get("reviews", [])
         for index, review in enumerate(reviews):
+            cleaned = {
+                key: value
+                for key, value in review.items()
+                if key not in ("UUID", "template_id", "AI_Draft")
+            }
             reviews[index] = {
                 "UUID": str(uuid.uuid4()),
-                **review,
+                "template_id": None,
+                **cleaned,
                 "AI_Draft": None,
             }
     return result

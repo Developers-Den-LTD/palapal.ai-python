@@ -43,12 +43,18 @@ class ReplyTemplate(BaseModel):
     """
     Style guide for AI review replies.
 
-    Required: tone, Prompt.
+    Required: template_id, tone, Prompt.
     Optional preference fields improve consistency when provided.
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
+    template_id: str = Field(
+        ...,
+        min_length=1,
+        validation_alias=AliasChoices("template_id", "templateId", "id"),
+        description="Client-side template identifier stored on each replied review",
+    )
     title: Optional[str] = Field(
         None,
         description="Optional label for this template",
@@ -88,6 +94,21 @@ class ReplyTemplate(BaseModel):
         alias="Prompt",
         description="Freeform messaging instructions for every reply",
     )
+
+    @field_validator("template_id", mode="before")
+    @classmethod
+    def _coerce_template_id(cls, value):
+        if value is None:
+            return value
+        return str(value)
+
+    @field_validator("template_id")
+    @classmethod
+    def _require_template_id(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("template_id is required when template is provided")
+        return cleaned
 
     @field_validator("tone", "prompt")
     @classmethod

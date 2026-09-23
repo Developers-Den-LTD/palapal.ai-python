@@ -618,16 +618,17 @@ def _scrape_feefo_reviews(feefo_url: str, max_reviews: int) -> dict:
 
 
 def _assign_extension_review_uuids(platform_block: dict) -> dict:
-    """Add UUID + AI_Draft to each review, same pattern as google_maps/yelp/tripadvisor."""
+    """Add UUID + template_id + AI_Draft to each review, same pattern as google_maps/yelp/tripadvisor."""
     reviews = platform_block.get("reviews") or []
     for index, review in enumerate(reviews):
         cleaned = {
             key: value
             for key, value in review.items()
-            if key not in ("UUID", "AI_Draft")
+            if key not in ("UUID", "template_id", "AI_Draft")
         }
         reviews[index] = {
             "UUID": str(uuid.uuid4()),
+            "template_id": None,
             **cleaned,
             "AI_Draft": None,
         }

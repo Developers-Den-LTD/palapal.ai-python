@@ -25,12 +25,16 @@ async def _run_keyword_seo_and_notify(payload: KeywordSeoRequest) -> None:
         matched = result.get("matched_keyword") or {}
         logger.info(
             "keyword_seo background: completed — "
-            f"status={result['status']}, found={result.get('found')}, "
+            f"status={result['status']}, "
+            f"business='{result.get('business_name')}', "
+            f"business_id='{result.get('business_id')}', "
+            f"found={result.get('found')}, "
             f"matched_keyword='{matched.get('keyword')}', "
             f"priority='{matched.get('priority')}', "
             f"position={matched.get('position')}, "
             f"keywords_tried={len(result.get('attempts') or [])}, "
-            f"total_actor_runs={result.get('total_actor_runs')}"
+            f"total_actor_runs={result.get('total_actor_runs')}, "
+            f"s3_key='{result.get('s3_key')}'"
         )
         await post_to_webhook(webhook_url, result)
     except Exception as e:
@@ -40,6 +44,8 @@ async def _run_keyword_seo_and_notify(payload: KeywordSeoRequest) -> None:
             {
                 "status": "error",
                 "message": str(e),
+                "business_name": payload.business_name,
+                "business_id": payload.business_id,
                 "website_url": payload.website_url,
                 "country_code": payload.country_code,
             },
@@ -53,6 +59,8 @@ async def keyword_seo_analysis(
 ):
     logger.info(
         "keyword_seo route: POST /api/keyword-seo-analysis — "
+        f"business='{payload.business_name}', "
+        f"business_id='{payload.business_id}', "
         f"website='{payload.website_url}', "
         f"country_code='{payload.country_code}', "
         f"keywords={len(payload.keywords)}, "
@@ -80,6 +88,8 @@ async def keyword_seo_analysis(
                 "Results will be sent to the webhook URL."
             ),
             "webhook_url": str(payload.webhook_url),
+            "business_name": payload.business_name,
+            "business_id": payload.business_id,
             "website_url": payload.website_url,
             "country_code": payload.country_code,
             "keyword_count": len(payload.keywords),

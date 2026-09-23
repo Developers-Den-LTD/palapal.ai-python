@@ -8,9 +8,14 @@ Each keyword still gets 2 scrapes and 2 Google pages.
 Priority is metadata only — used to break ties when picking matched_keyword.
 """
 
+from core.config import settings
 from schema.keyword_seo_schema import KeywordItem, KeywordSeoRequest
 from services.google_search_services import clean_url, scrape_google_search_ranks
 from services.logger_services import logger
+from services.s3_service import (
+    get_keyword_seo_s3_key,
+    upload_keyword_seo_result_to_s3,
+)
 
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
@@ -57,6 +62,8 @@ def run_keyword_seo_analysis(payload: KeywordSeoRequest) -> dict:
     website_url_raw = payload.website_url.strip()
     website_url = clean_url(website_url_raw)
     country_code = payload.country_code.strip().lower()
+    business_name = payload.business_name.strip()
+    business_id = payload.business_id
 
     if not website_url:
         raise ValueError(f"Invalid website_url: {website_url_raw}")
@@ -65,6 +72,7 @@ def run_keyword_seo_analysis(payload: KeywordSeoRequest) -> dict:
 
     logger.info(
         "keyword_seo: started — "
+        f"business='{business_name}', business_id='{business_id}', "
         f"website_raw='{website_url_raw}', website_cleaned='{website_url}', "
         f"country_code='{country_code}', keywords={len(keywords)}, "
         f"parallel=True, "
@@ -151,6 +159,7 @@ def run_keyword_seo_analysis(payload: KeywordSeoRequest) -> dict:
 
     logger.info(
         "keyword_seo: completed — "
+        f"business='{business_name}', business_id='{business_id}', "
         f"found={bool(public_matched and public_matched.get('found'))}, "
         f"keywords_tried={len(public_attempts)}, "
         f"total_actor_runs={total_actor_runs}, "
@@ -158,8 +167,10 @@ def run_keyword_seo_analysis(payload: KeywordSeoRequest) -> dict:
         f"'{public_matched.get('keyword') if public_matched else None}'"
     )
 
-    return {
+    result = {
         "status": "success",
+        "business_name": business_name,
+        "business_id": business_id,
         "website_url": website_url,
         "country_code": country_code,
         "found": bool(public_matched and public_matched.get("found")),
@@ -167,3 +178,19 @@ def run_keyword_seo_analysis(payload: KeywordSeoRequest) -> dict:
         "matched_keyword": public_matched,
         "attempts": public_attempts,
     }
+
+    s3_key = get_keyword_seo_s3_key(business_name, business_id)
+    if upload_keyword_seo_result_to_s3(business_name, result, business_id):
+        logger.info(
+            "keyword_seo: stored result in S3 — "
+            f"bucket={settings.AWS_S3_BUCKET}, key={s3_key}"
+        )
+        result["s3_key"] = s3_key
+    else:
+        logger.error(
+            "keyword_seo: failed to store result in S3 — "
+            f"business='{business_name}', key={s3_key}"
+        )
+        result["s3_key"] = None
+
+    return result

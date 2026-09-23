@@ -20,6 +20,8 @@ SCRAPED_RESULT_FILENAME = "scraped_result.json"
 DDI_SCORE_KEY_PREFIX = "DDI_score"
 DDI_SCORE_RESULT_FILENAME = "Result.json"
 REVIEW_REPLIES_KEY_PREFIX = "Review_Replies"
+KEYWORD_SEO_KEY_PREFIX = "Keyword_SEO"
+KEYWORD_SEO_RESULT_FILENAME = "Result.json"
 
 
 def _get_s3_client():
@@ -51,6 +53,14 @@ def get_review_replies_s3_key(
 ) -> str:
     folder_slug = build_scrape_storage_slug(business_name, business_id)
     return f"{REVIEW_REPLIES_KEY_PREFIX}/{folder_slug}"
+
+
+def get_keyword_seo_s3_key(
+    business_name: str,
+    business_id: str | int | None = None,
+) -> str:
+    folder_slug = build_scrape_storage_slug(business_name, business_id)
+    return f"{KEYWORD_SEO_KEY_PREFIX}/{folder_slug}/{KEYWORD_SEO_RESULT_FILENAME}"
 
 
 def upload_json_to_s3(*, s3_key: str, data: dict) -> bool:
@@ -105,6 +115,19 @@ def upload_review_replies_result_to_s3(
       Review_Replies/<business_slug>[_business_id]
     """
     s3_key = get_review_replies_s3_key(business_name, business_id)
+    return upload_json_to_s3(s3_key=s3_key, data=result)
+
+
+def upload_keyword_seo_result_to_s3(
+    business_name: str,
+    result: dict,
+    business_id: str | int | None = None,
+) -> bool:
+    """
+    Upload keyword SEO analysis result JSON to:
+      Keyword_SEO/<business_slug>[_business_id]/Result.json
+    """
+    s3_key = get_keyword_seo_s3_key(business_name, business_id)
     return upload_json_to_s3(s3_key=s3_key, data=result)
 
 
@@ -511,6 +534,65 @@ def fetch_ddi_score_by_business_id(business_id: str) -> dict | None:
     except Exception as exc:
         logger.error(
             f"s3_service: unexpected error fetching DDI score for business_id='{business_id}' — {exc}"
+        )
+        return None
+
+
+def fetch_keyword_seo_by_business_id(business_id: str) -> dict | None:
+    """
+    List objects under Keyword_SEO/ and find the folder whose name ends with the
+    given business_id, then return the parsed Result.json contents.
+    Folder naming: Keyword_SEO/<slugified_name>_<business_id>/Result.json
+    Returns None if not found.
+    """
+    business_id = str(business_id).strip()
+    if not business_id:
+        return None
+
+    prefix = f"{KEYWORD_SEO_KEY_PREFIX}/"
+    target_suffix = f"_{business_id}/{KEYWORD_SEO_RESULT_FILENAME}"
+
+    try:
+        client = _get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=settings.AWS_S3_BUCKET, Prefix=prefix)
+
+        matched_key: str | None = None
+        for page in pages:
+            for obj in page.get("Contents", []):
+                key: str = obj["Key"]
+                if key.endswith(target_suffix):
+                    matched_key = key
+                    break
+            if matched_key:
+                break
+
+        if not matched_key:
+            logger.warning(
+                f"s3_service: no Keyword SEO result found for business_id='{business_id}'"
+            )
+            return None
+
+        logger.info(
+            "s3_service: found Keyword SEO result — "
+            f"business_id='{business_id}', key='{matched_key}'"
+        )
+        response = client.get_object(Bucket=settings.AWS_S3_BUCKET, Key=matched_key)
+        return json.loads(response["Body"].read().decode("utf-8"))
+
+    except ClientError as exc:
+        logger.error(
+            "s3_service: failed to fetch Keyword SEO for "
+            f"business_id='{business_id}' — {exc}"
+        )
+        return None
+    except NoCredentialsError as exc:
+        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
+        return None
+    except Exception as exc:
+        logger.error(
+            "s3_service: unexpected error fetching Keyword SEO for "
+            f"business_id='{business_id}' — {exc}"
         )
         return None
 

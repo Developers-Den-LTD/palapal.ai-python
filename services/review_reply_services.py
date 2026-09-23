@@ -346,6 +346,7 @@ def _apply_replies_to_scraped_data(
     scraped_data: dict,
     comment_items: list[dict],
     replies: list[dict],
+    template_id: str | None = None,
 ) -> None:
     replies_by_uuid = {item["uuid"]: item["reply"] for item in replies}
 
@@ -356,6 +357,8 @@ def _apply_replies_to_scraped_data(
         scraped_data[platform]["reviews"][index]["AI_Draft"] = replies_by_uuid[
             comment_uuid
         ]
+        if template_id is not None:
+            scraped_data[platform]["reviews"][index]["template_id"] = template_id
 
 
 def _persist_scraped_data(
@@ -497,11 +500,18 @@ def generate_review_replies(payload: ReviewReplyRequest) -> dict:
         scraped_data,
     )
 
+    template_id = (
+        payload.template.template_id.strip()
+        if payload.template is not None
+        else None
+    )
+
     logger.info(
         f"review_reply: generating replies — business='{business_name}', "
         f"business_id='{business_id}', comment_count={len(comment_items)}, "
         f"batch_size={BATCH_SIZE}, "
-        f"template={'yes' if payload.template else 'no'}"
+        f"template={'yes' if payload.template else 'no'}, "
+        f"template_id='{template_id}'"
     )
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -525,7 +535,12 @@ def generate_review_replies(payload: ReviewReplyRequest) -> dict:
             f"({len(batch_replies)} replies)"
         )
 
-    _apply_replies_to_scraped_data(scraped_data, comment_items, current_replies)
+    _apply_replies_to_scraped_data(
+        scraped_data,
+        comment_items,
+        current_replies,
+        template_id=template_id,
+    )
     storage = _persist_scraped_data(scraped_data, business_name, business_id)
 
     logger.info(
