@@ -251,6 +251,11 @@ class SuggestedTemplate(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    template_id: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("template_id", "templateId", "id"),
+        description="Same id as current_template when suggesting an update",
+    )
     title: Optional[str] = None
     tone: str = Field(
         ...,
@@ -265,6 +270,21 @@ class SuggestedTemplate(BaseModel):
     )
     response_structure: Optional[list[str]] = None
     prompt: str = Field(..., min_length=1, alias="Prompt")
+
+    @field_validator("template_id", mode="before")
+    @classmethod
+    def _coerce_template_id(cls, value):
+        if value is None:
+            return None
+        return str(value)
+
+    @field_validator("template_id", "title")
+    @classmethod
+    def _strip_ids_and_title(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
 
     @field_validator("tone")
     @classmethod
@@ -298,7 +318,6 @@ class SuggestedTemplate(BaseModel):
         return cleaned
 
     @field_validator(
-        "title",
         "writing_style",
         "response_length",
         "sign_off",
@@ -322,10 +341,15 @@ class SuggestedTemplate(BaseModel):
 
 
 class CurrentTemplateInput(BaseModel):
-    """Optional existing template sent for context when suggesting updates."""
+    """Full existing template object sent for context when suggesting updates."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
+    template_id: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("template_id", "templateId", "id"),
+        description="Client-side template identifier",
+    )
     title: Optional[str] = None
     tone: Optional[str] = None
     writing_style: Optional[str] = None
@@ -337,6 +361,29 @@ class CurrentTemplateInput(BaseModel):
     )
     response_structure: Optional[list[str]] = None
     prompt: Optional[str] = Field(None, alias="Prompt")
+
+    @field_validator("template_id", mode="before")
+    @classmethod
+    def _coerce_template_id(cls, value):
+        if value is None:
+            return None
+        return str(value)
+
+    @field_validator(
+        "template_id",
+        "title",
+        "tone",
+        "writing_style",
+        "response_length",
+        "sign_off",
+        "prompt",
+    )
+    @classmethod
+    def _strip_optional_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
 
     @field_validator("preferred_wording", mode="before")
     @classmethod

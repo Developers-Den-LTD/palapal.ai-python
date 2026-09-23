@@ -641,6 +641,7 @@ def _parse_suggested_template(raw_text: str) -> tuple[SuggestedTemplate, str | N
 
     suggested = SuggestedTemplate.model_validate(
         {
+            "template_id": payload.get("template_id") or payload.get("templateId"),
             "title": payload.get("title"),
             "tone": payload.get("tone"),
             "writing_style": payload.get("writing_style"),
@@ -717,6 +718,11 @@ def suggest_template_from_edit(payload: SuggestTemplateRequest) -> dict:
     )
 
     if not was_modified:
+        current_template_payload = (
+            payload.current_template.model_dump(by_alias=True, exclude_none=True)
+            if payload.current_template is not None
+            else None
+        )
         return {
             "status": "success",
             "business_name": business_name,
@@ -727,6 +733,7 @@ def suggest_template_from_edit(payload: SuggestTemplateRequest) -> dict:
                 "No meaningful changes detected between the AI-generated "
                 "response and the edited draft."
             ),
+            "current_template": current_template_payload,
             "detected_preferences": None,
             "suggested_template": None,
             "diff_summary": None,
@@ -740,6 +747,15 @@ def suggest_template_from_edit(payload: SuggestTemplateRequest) -> dict:
     suggested, diff_summary = _analyze_template_with_llm(client, payload)
     suggested_payload = suggested.model_dump(by_alias=True)
 
+    # Preserve client template identity + title when updating an existing template.
+    if payload.current_template is not None:
+        if payload.current_template.template_id and not suggested_payload.get(
+            "template_id"
+        ):
+            suggested_payload["template_id"] = payload.current_template.template_id
+        if payload.current_template.title and not suggested_payload.get("title"):
+            suggested_payload["title"] = payload.current_template.title
+
     detected_preferences = {
         "tone": suggested_payload.get("tone"),
         "writing_style": suggested_payload.get("writing_style"),
@@ -750,9 +766,16 @@ def suggest_template_from_edit(payload: SuggestTemplateRequest) -> dict:
         "Prompt": suggested_payload.get("Prompt"),
     }
 
+    current_template_payload = (
+        payload.current_template.model_dump(by_alias=True, exclude_none=True)
+        if payload.current_template is not None
+        else None
+    )
+
     logger.info(
         "review_reply suggest_template: completed — "
-        f"business='{business_name}', tone='{suggested.tone}'"
+        f"business='{business_name}', tone='{suggested.tone}', "
+        f"template_id='{suggested_payload.get('template_id')}'"
     )
 
     return {
@@ -762,6 +785,7 @@ def suggest_template_from_edit(payload: SuggestTemplateRequest) -> dict:
         "was_modified": True,
         "should_suggest_update": True,
         "message": SUGGEST_TEMPLATE_MESSAGE,
+        "current_template": current_template_payload,
         "detected_preferences": detected_preferences,
         "suggested_template": suggested_payload,
         "diff_summary": diff_summary,
