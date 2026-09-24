@@ -11,7 +11,7 @@ from services.logger_services import logger
 
 
 PROVIDER_MODEL_FALLBACKS = {
-    "openai": ["gpt-4o-mini", "gpt-5.4-mini", "gpt-5.4-nano"],
+    "openai": ["gpt-4.1-mini", "gpt-5.4-mini", "gpt-5.4-nano"],
     "gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
     "anthropic": [
         "claude-sonnet-4-5-20250929",
