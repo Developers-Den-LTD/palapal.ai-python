@@ -550,15 +550,20 @@ def get_keyword_seo_comparison(
     for cid, cmap in competitor_maps.items():
         competitor_only[cid] = _unique_keyword_rows(cmap, your_keys)
 
+    you_only_count = len(you_only)
+    competitor_only_count = sum(len(v) for v in competitor_only.values())
+    totals = {
+        **shared_totals,
+        "you_only_count": you_only_count,
+        "competitor_only_count": competitor_only_count,
+    }
+
+    # totals is used only for insight generation — not returned in the API response
     comparison = {
         "shared_keywords": shared_rows,
         "you_only_keywords": you_only,
         "competitor_only_keywords": competitor_only,
-        "totals": {
-            **shared_totals,
-            "you_only_count": len(you_only),
-            "competitor_only_count": sum(len(v) for v in competitor_only.values()),
-        },
+        "totals": totals,
     }
 
     you_public = _strip_internal(you)
@@ -567,6 +572,7 @@ def get_keyword_seo_comparison(
     }
 
     key_insights = _generate_insights(you_public, competitors_public, comparison)
+    comparison.pop("totals", None)
 
     status = "success"
     if you_public.get("status") == "not_found":
@@ -579,9 +585,9 @@ def get_keyword_seo_comparison(
     logger.info(
         "keyword_seo_comparison: completed — "
         f"business_id='{business_id}', status={status}, "
-        f"shared={comparison['totals']['shared_count']}, "
-        f"you_only={comparison['totals']['you_only_count']}, "
-        f"competitor_only={comparison['totals']['competitor_only_count']}, "
+        f"shared={totals['shared_count']}, "
+        f"you_only={you_only_count}, "
+        f"competitor_only={competitor_only_count}, "
         f"insights={len(key_insights)}"
     )
 
