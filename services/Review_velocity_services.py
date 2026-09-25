@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -338,9 +339,27 @@ def analyze_reputation_score(
 
     reviews = _load_reviews(scraped_data)
 
-    review_velocity = _calculate_review_velocity(reviews, reference_date)
-    star_rating_decay = _calculate_star_rating_decay(reviews, reference_date)
-    response_rate = _calculate_response_rate(reviews, reference_date)
+    # Independent scoring tasks — run in parallel
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        velocity_future = executor.submit(
+            _calculate_review_velocity,
+            reviews,
+            reference_date,
+        )
+        decay_future = executor.submit(
+            _calculate_star_rating_decay,
+            reviews,
+            reference_date,
+        )
+        response_future = executor.submit(
+            _calculate_response_rate,
+            reviews,
+            reference_date,
+        )
+
+        review_velocity = velocity_future.result()
+        star_rating_decay = decay_future.result()
+        response_rate = response_future.result()
 
     ddi_reputation_score = round(
         review_velocity["score"] + star_rating_decay["score"] + response_rate["score"],

@@ -2,6 +2,7 @@ import httpx
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 import phonenumbers
@@ -660,77 +661,110 @@ def calculate_ddi_technical_foundation_score(
     return total
 
 
+def _run_pagespeed_strategy(website_url: str, strategy: str) -> dict:
+    """
+    Run one PageSpeed strategy in its own HTTP client (thread-safe).
+    Returns {"ok": True, "result": ...} or {"ok": False, "strategy": ..., "details": ...}.
+    """
+    _log_section(f"PageSpeed API call ({strategy})")
+    logger.info(
+        f"technical_foundation: calling PageSpeed API — "
+        f"endpoint={PAGESPEED_ENDPOINT}, strategy={strategy}"
+    )
+    print(f"Calling PageSpeed API for: {strategy}")
+
+    with httpx.Client(timeout=120.0) as client:
+        response = _get_pagespeed_with_retries(
+            client,
+            website_url=website_url,
+            strategy=strategy,
+            max_attempts=5,
+            base_delay_seconds=1.0,
+        )
+
+    logger.info(
+        f"technical_foundation: API response — "
+        f"strategy={strategy}, status_code={response.status_code}"
+    )
+    print(f"Status Code ({strategy}): {response.status_code}")
+
+    if response.status_code != 200:
+        logger.error(
+            f"technical_foundation: API error — strategy={strategy}, "
+            f"status={response.status_code}, body={response.text}"
+        )
+        print(f"\nError ({strategy}):\n{response.text}\n")
+        return {
+            "ok": False,
+            "strategy": strategy,
+            "details": response.text,
+        }
+
+    strategy_result = _extract_strategy_result(
+        website_url, strategy, response.json()
+    )
+    _log_strategy_result(strategy_result)
+    return {"ok": True, "result": strategy_result}
+
+
 def check_technical_foundation(
     website_url: str,
     business_name: str,
     business_id: str | int | None = None,
 ) -> dict:
-    llms_txt_result = check_llms_txt(website_url)
-    json_ld_result = check_json_ld(website_url)
-    nap_consistency_result = check_nap_consistency(business_name, business_id)
-
-    _log_section("Technical Foundation — PageSpeed analysis started")
+    _log_section("Technical Foundation — starting parallel analysis")
     logger.info(f"technical_foundation: website_url='{website_url}'")
     logger.info(f"technical_foundation: strategies={STRATEGIES}")
     print(f"Website URL : {website_url}")
     print(f"Strategies  : {', '.join(STRATEGIES)}\n")
 
+    # llms.txt, JSON-LD, NAP, and each PageSpeed strategy are independent
+    worker_count = 3 + len(STRATEGIES)
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        llms_future = executor.submit(check_llms_txt, website_url)
+        json_ld_future = executor.submit(check_json_ld, website_url)
+        nap_future = executor.submit(
+            check_nap_consistency,
+            business_name,
+            business_id,
+        )
+        pagespeed_futures = {
+            strategy: executor.submit(_run_pagespeed_strategy, website_url, strategy)
+            for strategy in STRATEGIES
+        }
+
+        llms_txt_result = llms_future.result()
+        json_ld_result = json_ld_future.result()
+        nap_consistency_result = nap_future.result()
+        pagespeed_by_strategy = {
+            strategy: future.result()
+            for strategy, future in pagespeed_futures.items()
+        }
+
     results = []
-
-    with httpx.Client(timeout=120.0) as client:
-        for index, strategy in enumerate(STRATEGIES, start=1):
-            _log_section(f"Step {index} — PageSpeed API call ({strategy})")
-            logger.info(
-                f"technical_foundation: calling PageSpeed API — "
-                f"endpoint={PAGESPEED_ENDPOINT}, strategy={strategy}"
+    for strategy in STRATEGIES:
+        pagespeed_outcome = pagespeed_by_strategy[strategy]
+        if not pagespeed_outcome.get("ok"):
+            ddi_technical_foundation_result = calculate_ddi_technical_foundation_score(
+                None,
+                llms_txt_result,
+                json_ld_result,
+                nap_consistency_result,
             )
-            print(f"Calling PageSpeed API for: {strategy}")
-
-            response = _get_pagespeed_with_retries(
-                client,
-                website_url=website_url,
-                strategy=strategy,
-                max_attempts=5,
-                base_delay_seconds=1.0,
-            )
-
-            logger.info(
-                f"technical_foundation: API response — "
-                f"strategy={strategy}, status_code={response.status_code}"
-            )
-            print(f"Status Code: {response.status_code}")
-
-            if response.status_code != 200:
-                logger.error(
-                    f"technical_foundation: API error — strategy={strategy}, "
-                    f"status={response.status_code}, body={response.text}"
-                )
-                print(f"\nError:\n{response.text}\n")
-                ddi_technical_foundation_result = calculate_ddi_technical_foundation_score(
-                    None,
-                    llms_txt_result,
-                    json_ld_result,
-                    nap_consistency_result,
-                )
-                return {
-                    "status": "error",
-                    "message": f"PageSpeed API failed for {strategy}",
-                    "website": website_url,
-                    "business_name": business_name,
-                    "business_id": business_id,
-                    "details": response.text,
-                    "llms_txt": llms_txt_result,
-                    "json_ld": json_ld_result,
-                    "nap_consistency": nap_consistency_result,
-                    "DDI_technical_foundation_Result": ddi_technical_foundation_result,
-                    "max_technical_foundation_Score": MAX_DDI_TECHNICAL_FOUNDATION_SCORE,
-                }
-
-            strategy_result = _extract_strategy_result(
-                website_url, strategy, response.json()
-            )
-            results.append(strategy_result)
-            _log_strategy_result(strategy_result)
+            return {
+                "status": "error",
+                "message": f"PageSpeed API failed for {strategy}",
+                "website": website_url,
+                "business_name": business_name,
+                "business_id": business_id,
+                "details": pagespeed_outcome.get("details"),
+                "llms_txt": llms_txt_result,
+                "json_ld": json_ld_result,
+                "nap_consistency": nap_consistency_result,
+                "DDI_technical_foundation_Result": ddi_technical_foundation_result,
+                "max_technical_foundation_Score": MAX_DDI_TECHNICAL_FOUNDATION_SCORE,
+            }
+        results.append(pagespeed_outcome["result"])
 
     _log_section("Technical Foundation — Final Summary")
     for strategy_result in results:

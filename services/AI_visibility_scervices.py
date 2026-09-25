@@ -1,4 +1,5 @@
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from openai import OpenAI
 
@@ -564,20 +565,30 @@ def analyze_ai_visibility(payload: AIVisibilityRequest) -> dict:
     )
     answer_records = _all_answer_records(provider_results, questions)
 
-    # ---------------- Calculate Citation ---------------- #
-    citation_score = _calculate_citation_score(business_name, answer_records)
-    
-    
-    # ---------------- Calculate Exposure Fairness ---------------- #
-    exposure_fairness = _calculate_exposure_fairness(
-        business_name,
-        answer_records,
+    # Citation + Sentiment in parallel (independent).
+    # Exposure Fairness waits until Citation finishes.
+    _log_section(
+        "Step 3/5 — Citation + Sentiment in parallel; "
+        "Exposure after Citation"
     )
-    
-    
-    # ---------------- Calculate Sentiment Analysis ---------------- #
-    sentiment_analysis = _calculate_sentiment_analysis(business_name, business_id)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        citation_future = executor.submit(
+            _calculate_citation_score,
+            business_name,
+            answer_records,
+        )
+        sentiment_future = executor.submit(
+            _calculate_sentiment_analysis,
+            business_name,
+            business_id,
+        )
 
+        citation_score = citation_future.result()
+        exposure_fairness = _calculate_exposure_fairness(
+            business_name,
+            answer_records,
+        )
+        sentiment_analysis = sentiment_future.result()
 
     citation_result = citation_score["score"]
     exposure_fairness_result = exposure_fairness["score"]
