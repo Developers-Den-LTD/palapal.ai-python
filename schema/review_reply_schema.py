@@ -4,6 +4,9 @@ import re
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 
+WRITING_STYLE_MAX_WORDS = 3
+
+
 def _normalize_string_list(value, *, split_arrows: bool = False):
     """
     Normalize list[str] fields.
@@ -39,6 +42,19 @@ def _normalize_string_list(value, *, split_arrows: bool = False):
     return items or None
 
 
+def _normalize_writing_style(value: Optional[str]) -> Optional[str]:
+    """Strip and keep writing_style to at most 3 short words."""
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    words = cleaned.split()
+    if len(words) > WRITING_STYLE_MAX_WORDS:
+        cleaned = " ".join(words[:WRITING_STYLE_MAX_WORDS])
+    return cleaned
+
+
 class ReplyTemplate(BaseModel):
     """
     Style guide for AI review replies.
@@ -66,7 +82,7 @@ class ReplyTemplate(BaseModel):
     )
     writing_style: Optional[str] = Field(
         None,
-        description="How replies should read (e.g. conversational, first-person)",
+        description="How replies should read — 1 to 3 words max (e.g. conversational, first person)",
     )
     response_length: Optional[str] = Field(
         None,
@@ -120,7 +136,6 @@ class ReplyTemplate(BaseModel):
 
     @field_validator(
         "title",
-        "writing_style",
         "response_length",
         "sign_off",
     )
@@ -130,6 +145,11 @@ class ReplyTemplate(BaseModel):
             return None
         cleaned = value.strip()
         return cleaned or None
+
+    @field_validator("writing_style")
+    @classmethod
+    def _normalize_writing_style_field(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_writing_style(value)
 
     @field_validator("preferred_wording", mode="before")
     @classmethod
@@ -282,7 +302,10 @@ class SuggestedTemplate(BaseModel):
         ...,
         description="One of: Casual, Professional, Friendly, Apology",
     )
-    writing_style: Optional[str] = None
+    writing_style: Optional[str] = Field(
+        None,
+        description="How replies should read — 1 to 3 words max (e.g. conversational, first person)",
+    )
     response_length: Optional[str] = None
     preferred_wording: Optional[list[str]] = None
     sign_off: Optional[str] = Field(
@@ -339,7 +362,6 @@ class SuggestedTemplate(BaseModel):
         return cleaned
 
     @field_validator(
-        "writing_style",
         "response_length",
         "sign_off",
     )
@@ -349,6 +371,11 @@ class SuggestedTemplate(BaseModel):
             return None
         cleaned = value.strip()
         return cleaned or None
+
+    @field_validator("writing_style")
+    @classmethod
+    def _normalize_writing_style_field(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_writing_style(value)
 
     @field_validator("preferred_wording", mode="before")
     @classmethod
@@ -394,7 +421,6 @@ class CurrentTemplateInput(BaseModel):
         "template_id",
         "title",
         "tone",
-        "writing_style",
         "response_length",
         "sign_off",
         "prompt",
@@ -405,6 +431,11 @@ class CurrentTemplateInput(BaseModel):
             return None
         cleaned = str(value).strip()
         return cleaned or None
+
+    @field_validator("writing_style")
+    @classmethod
+    def _normalize_writing_style_field(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_writing_style(value)
 
     @field_validator("preferred_wording", mode="before")
     @classmethod

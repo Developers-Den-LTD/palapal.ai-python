@@ -629,6 +629,7 @@ Focus on:
 
 Rules:
 - tone MUST be exactly one of: {", ".join(SUGGESTED_TONES)}
+- writing_style MUST be 1 to 3 words maximum (e.g. "conversational", "first person", "warm concise")
 - preferred_wording must be an array of short phrases (or empty array)
 - response_structure must be an array of ordered steps (e.g. ["greeting", "thanks", "invite back", "sign-off"])
 - Prompt must be clear reusable instructions for generating future replies
@@ -638,7 +639,7 @@ Rules:
 Return only valid JSON in this exact shape:
 {{
   "tone": "Friendly",
-  "writing_style": "...",
+  "writing_style": "first person",
   "response_length": "...",
   "preferred_wording": ["..."],
   "sign_off": "...",
