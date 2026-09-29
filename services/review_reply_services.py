@@ -642,6 +642,8 @@ Rules:
 - preferred_wording must be an array of short phrases (or empty array)
 - response_structure must be an array of ordered steps (e.g. ["greeting", "thanks", "invite back", "sign-off"])
 - Prompt must be clear reusable instructions for generating future replies
+- Prompt MUST be rating-agnostic: never mention star ratings, scores, or rating-specific rules (do NOT write things like "for 5-star reviews...", "for low ratings...", "if rating is 1...")
+- Prompt should apply the same style guidance to every review regardless of rating
 - Do not invent business policies, discounts, or contact details
 - Keep suggestions practical and based on the edit
 
