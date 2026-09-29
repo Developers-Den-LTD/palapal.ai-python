@@ -23,7 +23,14 @@ LLM_MODEL = "gpt-5.4-nano"
 TIMESTAMP_FORMAT = "%d %B %Y %H:%M"
 BATCH_SIZE = 10
 MAX_BATCH_ATTEMPTS = 2
-PLATFORMS = ("google_maps", "yelp", "tripadvisor")
+PLATFORMS = (
+    "google_maps",
+    "yelp",
+    "tripadvisor",
+    "facebook",
+    "trustpilot",
+    "feefo",
+)
 
 
 def _now() -> str:
@@ -124,7 +131,9 @@ def _prepare_comments(
                 "date": _resolve_comment_date(
                     comment,
                     request_date,
-                    existing_review.get("date"),
+                    existing_review.get("date")
+                    or existing_review.get("publishedDate")
+                    or existing_review.get("published_date"),
                 ),
                 "is_update": has_previous_draft,
                 "previous_reply": previous_reply if has_previous_draft else None,
