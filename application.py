@@ -6,6 +6,7 @@ from routes import pending_responses, all_responses, logs_router, Action_Cards_r
 from routes import competitor_analysis_route, page_audit_route, reddit_discussion_route, citation_analysis_route
 from routes import keyword_seo_route, ai_keyword_generation_route, keyword_seo_comparison_route
 from routes import review_extension_platforms_route
+from routes import social_content_route
 from services.model_loader import load_sentiment_model
 from utils.auth_utils import verify_secret_key
 
@@ -41,6 +42,7 @@ application.include_router(
     review_extension_platforms_route.router,
     dependencies=[Depends(verify_secret_key)],
 )
+application.include_router(social_content_route.router, dependencies=[Depends(verify_secret_key)])
 
 # application.mount("/images", StaticFiles(directory="images"), name="images")
 

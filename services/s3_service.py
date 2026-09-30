@@ -22,6 +22,7 @@ DDI_SCORE_RESULT_FILENAME = "Result.json"
 REVIEW_REPLIES_KEY_PREFIX = "Review_Replies"
 KEYWORD_SEO_KEY_PREFIX = "Keyword_SEO"
 KEYWORD_SEO_RESULT_FILENAME = "Result.json"
+SOCIAL_CONTENT_KEY_PREFIX = "Social_Content"
 
 
 def _get_s3_client():
@@ -90,6 +91,91 @@ def upload_json_to_s3(*, s3_key: str, data: dict) -> bool:
     except Exception as exc:
         logger.error(f"s3_service: unexpected JSON upload error for key={s3_key} — {exc}")
         return False
+
+
+def get_social_content_job_prefix(
+    business_name: str,
+    business_id: str | int | None,
+    job_id: str,
+) -> str:
+    folder_slug = build_scrape_storage_slug(business_name, business_id)
+    return f"{SOCIAL_CONTENT_KEY_PREFIX}/{folder_slug}/{job_id}"
+
+
+def upload_bytes_to_s3(*, s3_key: str, data: bytes, content_type: str) -> bool:
+    """Upload raw bytes (e.g. a generated image) to S3 at a given key."""
+    try:
+        _get_s3_client().put_object(
+            Bucket=settings.AWS_S3_BUCKET,
+            Key=s3_key,
+            Body=data,
+            ContentType=content_type,
+        )
+        logger.info(
+            f"s3_service: bytes upload completed successfully — "
+            f"bucket={settings.AWS_S3_BUCKET}, key={s3_key}, bytes={len(data)}"
+        )
+        return True
+    except ClientError as exc:
+        logger.error(f"s3_service: bytes upload failed for key={s3_key} — {exc}")
+        return False
+    except NoCredentialsError as exc:
+        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
+        return False
+    except Exception as exc:
+        logger.error(f"s3_service: unexpected bytes upload error for key={s3_key} — {exc}")
+        return False
+
+
+def generate_presigned_get_url(*, s3_key: str, expires_in: int) -> str | None:
+    """Presigned GET link for an object; SigV4 caps expires_in at 604800 s (7 days)."""
+    try:
+        url = _get_s3_client().generate_presigned_url(
+            "get_object",
+            Params={"Bucket": settings.AWS_S3_BUCKET, "Key": s3_key},
+            ExpiresIn=expires_in,
+        )
+        logger.info(
+            f"s3_service: presigned URL created — key={s3_key}, expires_in={expires_in}s"
+        )
+        return url
+    except ClientError as exc:
+        logger.error(f"s3_service: presigned URL failed for key={s3_key} — {exc}")
+        return None
+    except NoCredentialsError as exc:
+        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
+        return None
+    except Exception as exc:
+        logger.error(f"s3_service: unexpected presigned URL error for key={s3_key} — {exc}")
+        return None
+
+
+def download_json_from_s3(*, s3_key: str) -> dict | None:
+    """Read a JSON object from S3; None when the key is missing or the body is not a JSON object."""
+    try:
+        response = _get_s3_client().get_object(Bucket=settings.AWS_S3_BUCKET, Key=s3_key)
+        data = json.loads(response["Body"].read().decode("utf-8"))
+        if not isinstance(data, dict):
+            logger.error(f"s3_service: JSON at key={s3_key} is not an object")
+            return None
+        logger.info(f"s3_service: JSON download completed — key={s3_key}")
+        return data
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("404", "NoSuchKey", "NotFound"):
+            logger.warning(f"s3_service: JSON not found in S3 — key={s3_key}")
+        else:
+            logger.error(f"s3_service: JSON download failed for key={s3_key} — {exc}")
+        return None
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        logger.error(f"s3_service: JSON at key={s3_key} could not be parsed — {exc}")
+        return None
+    except NoCredentialsError as exc:
+        logger.error(f"s3_service: invalid or missing AWS credentials — {exc}")
+        return None
+    except Exception as exc:
+        logger.error(f"s3_service: unexpected JSON download error for key={s3_key} — {exc}")
+        return None
 
 
 def upload_ddi_score_result_to_s3(

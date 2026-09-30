@@ -7,6 +7,7 @@ routes/__pycache__
 
 # Virtual environment
 venv/
+.venv/
 
 # Environment variables / Secrets
 .env
@@ -31,3 +32,5 @@ review_replies/
 images/
 
 socialmedia/
+
+tests/
