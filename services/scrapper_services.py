@@ -16,6 +16,7 @@ from services.logger_services import logger
 from services.s3_service import (
     delete_scraped_result_from_s3,
     get_s3_key,
+    load_scraped_result_data,
     upload_scraped_result_to_s3,
 )
 from utils.platform_urls import normalize_tripadvisor_url, normalize_yelp_url
@@ -30,6 +31,8 @@ client = ApifyClient(APIFY_API_TOKEN)
 
 ACTOR_MAX_ATTEMPTS = 3
 ACTOR_RETRY_DELAY_SECONDS = 2
+EXTENSION_PLATFORMS = ("facebook", "trustpilot", "feefo")
+CORE_PLATFORMS = ("google_maps", "yelp", "tripadvisor")
 
 
 def _run_actor_with_retry(
@@ -739,7 +742,7 @@ def _scrape_tripadvisor(tripadvisor_url: str | None):
 
 
 def _assign_review_uuids(result: dict) -> dict:
-    for platform in ("google_maps", "yelp", "tripadvisor"):
+    for platform in CORE_PLATFORMS:
         reviews = result.get(platform, {}).get("reviews", [])
         for index, review in enumerate(reviews):
             cleaned = {
@@ -754,6 +757,75 @@ def _assign_review_uuids(result: dict) -> dict:
                 "AI_Draft": None,
             }
     return result
+
+
+def _order_scraped_result_keys(result: dict) -> dict:
+    """Keep a stable field order: core scrape fields, then extension platforms."""
+    ordered: dict = {}
+    leading_keys = (
+        "business",
+        "business_id",
+        "branch_name",
+        "google_place_id",
+        "scraped_at",
+        "extension_scraped_at",
+        "summary",
+        *CORE_PLATFORMS,
+        *EXTENSION_PLATFORMS,
+    )
+    for key in leading_keys:
+        if key in result:
+            ordered[key] = result[key]
+    for key, value in result.items():
+        if key not in ordered:
+            ordered[key] = value
+    return ordered
+
+
+def _preserve_extension_platforms(
+    result: dict,
+    business_name: str,
+    business_id: str | int | None,
+) -> dict:
+    """
+    Keep facebook / trustpilot / feefo (and their summary) from an existing
+    scraped_result.json when scrape-reviews rewrites core platforms.
+    """
+    try:
+        existing = load_scraped_result_data(business_name, business_id)
+    except FileNotFoundError:
+        return result
+    except Exception as exc:
+        logger.warning(
+            f"scrape_reviews: could not load existing scraped_result to preserve "
+            f"extension platforms — {exc}"
+        )
+        return result
+
+    summary = dict(result.get("summary") or {})
+    existing_summary = existing.get("summary") or {}
+    preserved: list[str] = []
+
+    for platform in EXTENSION_PLATFORMS:
+        block = existing.get(platform)
+        if not isinstance(block, dict):
+            continue
+        result[platform] = block
+        if platform in existing_summary:
+            summary[platform] = existing_summary[platform]
+        preserved.append(platform)
+
+    if existing.get("extension_scraped_at"):
+        result["extension_scraped_at"] = existing["extension_scraped_at"]
+
+    result["summary"] = summary
+
+    if preserved:
+        logger.info(
+            "scrape_reviews: preserved extension platforms from previous scrape — "
+            f"{preserved}"
+        )
+    return _order_scraped_result_keys(result)
 
 
 def _is_empty_url(url: str | None) -> bool:
@@ -913,6 +985,11 @@ async def scrape_reviews(payload: ScrapeRequest) -> dict:
     }
 
     result = _assign_review_uuids(result)
+    result = _preserve_extension_platforms(
+        result,
+        payload.business_name,
+        payload.business_id,
+    )
     save_scraped_result(result, payload.business_name, payload.business_id)
 
     logger.info(
